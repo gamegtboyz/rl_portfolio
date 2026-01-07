@@ -2,7 +2,7 @@ from utils import date_index
 import pandas as pd
 import numpy as np
 import quantstats as qs
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize, unwrap_vec_normalize
 from portfolio_env import PortfolioEnv
 import torch as th
 from typing import Tuple
@@ -32,48 +32,111 @@ def split_build_normalize_env(price_data:pd.DataFrame, port_initial_date:str, lo
 
 def evaluate_model_sb3(model, env, num_episodes=10):
     """
-    Evaluate a Stable Baselines3 model on the environment
+    Clean redesign: Evaluate a Stable Baselines3 model on the environment.
     
     Args:
-        model: Loaded SB3 model (A2C, PPO, DDPG, SAC, etc.)
-        env: Environment to evaluate on (typically VecNormalize wrapped)
-        num_episodes: Number of episodes to evaluate
+        model: Loaded SB3 model (A2C, PPO, DDPG, SAC)
+        env: VecNormalize wrapped environment
+        num_episodes (int): Number of evaluation episodes
     
     Returns:
-        dict with evaluation metrics:
-            - annualized_return: mean return across episodes
-            - sharpe_ratio: 0.0 (placeholder)
-            - max_drawdown: 0.0 (placeholder)
-            - annualized_volatility: 0.0 (placeholder)
-            - sortino_ratio: 0.0 (placeholder)
+        dict with metrics from LAST episode:
+            - annualized_return (float)
+            - annualized_volatility (float)
+            - sharpe_ratio (float, risk-free rate = 3%)
+            - max_drawdown (float)
+            - sortino_ratio (float)
+            - portfolio_values (np.ndarray): Array of portfolio values
+            - avg_weights (np.ndarray): Average weights across assets
     """
-    episode_returns = []
+    episodes_data = []
     
+    # ===== RUN MULTIPLE EPISODES =====
     for ep in range(num_episodes):
         obs = env.reset()
         done = False
-        portfolio_values = []
         
+        portfolio_values = []
+        weights_list = []
+        
+        # ===== COLLECT DATA DURING EPISODE =====
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, info = env.step(action)
             
-            # Track portfolio value if available
-            if hasattr(env.envs[0], 'portfolio_value'):
-                portfolio_values.append(env.envs[0].portfolio_value)
+            # Extract from info dict (VecEnv returns list of dicts)
+            portfolio_values.append(info[0]['portfolio_value'])
+            weights_list.append(info[0]['weights'].copy())
         
-        # Calculate total return for this episode
-        if portfolio_values:
-            total_return = (portfolio_values[-1] - portfolio_values[0]) / portfolio_values[0]
-            episode_returns.append(total_return)
+        # Convert to arrays
+        portfolio_values = np.array(portfolio_values)
+        weights_array = np.array(weights_list)
+        
+        # ===== CALCULATE METRICS =====
+        
+        # Daily returns from portfolio values
+        daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
+        
+        # Total return over period
+        total_return = (portfolio_values[-1] - portfolio_values[0]) / portfolio_values[0]
+        n_days = len(daily_returns)
+        
+        # Annualized return (convert from daily to annual)
+        annualized_return = (1 + total_return) ** (252 / n_days) - 1
+        
+        # Annualized volatility
+        annualized_volatility = np.std(daily_returns) * np.sqrt(252)
+        
+        # Sharpe Ratio (risk-free rate = 3%)
+        risk_free_rate = 0.03
+        sharpe_ratio = (
+            (annualized_return - risk_free_rate) / annualized_volatility 
+            if annualized_volatility > 0 else 0
+        )
+        
+        # Maximum Drawdown
+        cumulative_return = np.cumprod(1 + daily_returns)
+        running_max = np.maximum.accumulate(cumulative_return)
+        drawdowns = (cumulative_return - running_max) / running_max
+        max_drawdown = np.min(drawdowns)
+        
+        # Sortino Ratio (downside deviation)
+        negative_returns = daily_returns[daily_returns < 0]
+        if len(negative_returns) > 0:
+            downside_dev = np.std(negative_returns) * np.sqrt(252)
+        else:
+            downside_dev = annualized_volatility  # Fallback
+        
+        sortino_ratio = (
+            (annualized_return - risk_free_rate) / downside_dev 
+            if downside_dev > 0 else 0
+        )
+        
+        # Average weights across episode (skip first since it's initial allocation)
+        avg_weights = np.mean(weights_array[1:], axis=0)
+        
+        # Store episode data
+        episodes_data.append({
+            'portfolio_values': portfolio_values,
+            'annualized_return': annualized_return,
+            'annualized_volatility': annualized_volatility,
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'sortino_ratio': sortino_ratio,
+            'avg_weights': avg_weights,
+        })
     
-    # Return metrics dictionary
+    # ===== RETURN LAST EPISODE =====
+    last = episodes_data[-1]
+    
     return {
-        'annualized_return': np.mean(episode_returns) if episode_returns else 0.0,
-        'sharpe_ratio': 0.0,
-        'max_drawdown': 0.0,
-        'annualized_volatility': 0.0,
-        'sortino_ratio': 0.0,
+        'annualized_return': last['annualized_return'],
+        'annualized_volatility': last['annualized_volatility'],
+        'sharpe_ratio': last['sharpe_ratio'],
+        'max_drawdown': last['max_drawdown'],
+        'sortino_ratio': last['sortino_ratio'],
+        'portfolio_values': last['portfolio_values'],
+        'avg_weights': last['avg_weights'],
     }
 
 class LoggerCallback(BaseCallback):

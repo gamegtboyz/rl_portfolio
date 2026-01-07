@@ -2,6 +2,9 @@ import pandas as pd
 import numpy as np
 import pypfopt as ppo
 import quantstats as qs
+import csv
+from datetime import datetime
+import os
 
 def date_index(price_data, date_string: str) -> int:
     '''converts date string to nearest following trading date index'''
@@ -131,3 +134,54 @@ def buy_and_hold(price_data, port_initial_date, initial_capital:float):
     }
 
     return results
+
+hpt_log_file = 'tables/hpt_log.csv'
+hpt_columns = [
+    'timestamp',
+    'model_name',
+    'learning_rate',
+    'n_steps',
+    'batch_size',
+    'gamma',
+    'gae_lambda',
+    'ent_coef',
+    'vf_coef',
+    'buffer_size',
+    'tau',
+    'total_timesteps',
+    'annualized_return',
+    'sharpe_ratio',
+    'max_drawdown',
+    'annualized_volatility',
+    'sortino_ratio',
+    'portfolio_values'
+]
+
+if not os.path.exists(hpt_log_file):
+    with open(hpt_log_file, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=hpt_columns)
+        writer.writeheader()
+
+def log_hpt_results(model_name, hyperparams, total_timesteps, eval_results):
+    """Log hyperparameter tuning results to CSV"""
+    row = {
+        'timestamp': datetime.now().isoformat(),
+        'model_name': model_name,
+        'total_timesteps': total_timesteps,
+        'annualized_return': eval_results.get('annualized_return'),
+        'sharpe_ratio': eval_results.get('sharpe_ratio'),
+        'max_drawdown': eval_results.get('max_drawdown'),
+        'annualized_volatility': eval_results.get('annualized_volatility'),
+        'sortino_ratio': eval_results.get('sortino_ratio'),
+        'portfolio_values': eval_results.get('portfolio_values')
+    }
+    # Add hyperparameters
+    row.update(hyperparams)
+    
+    with open(hpt_log_file, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=hpt_columns)
+        writer.writerow(row)
+    
+    print(f"✓ Logged {model_name} results to {hpt_log_file}")
+
+print("✓ Hyperparameter tracking initialized!")

@@ -1,2 +1,2 @@
-annualized_return,sharpe_ratio,max_drawdown,annualized_volatility,sortino_ratio
-0.013006028296655283,0.0,0.0,0.0,0.0
+annualized_return,annualized_volatility,sharpe_ratio,max_drawdown,sortino_ratio
+-0.12462881130525727,0.10254187369091393,-1.507957732187984,-0.3463562952386499,-2.3762007391720337
