@@ -1,0 +1,10 @@
+gae_lambda,verbose,seed,annualized_return,ent_coef,lookback_period,vf_coef,sharpe_ratio,max_drawdown,train_env,learning_rate,n_steps,gamma
+0.99,1.0,42.0,-3.17%,1e-05,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x000001826B9B6470>,0.0001,,
+0.99,1.0,42.0,-4.04%,1e-05,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x000001824A106140>,0.0001,3072.0,
+0.99,1.0,42.0,-3.85%,1e-05,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x000001824A106140>,0.0001,3072.0,
+0.99,1.0,42.0,-4.67%,0.0001,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x000001824A106140>,5e-05,2048.0,
+0.99,1.0,42.0,-7.97%,0.001,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x000001824A106140>,1e-05,2048.0,
+0.99,1.0,42.0,-8.86%,0.003,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x000001824A106140>,0.0001,2048.0,
+0.99,1.0,42.0,-11.04%,0.003,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x000001826AB12250>,0.0001,2048.0,
+0.99,1.0,42.0,-10.03%,0.001,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x000001826AB12250>,5e-05,2048.0,
+0.99,1.0,42.0,-7.66%,0.001,,,,,<stable_baselines3.common.vec_env.vec_normalize.VecNormalize object at 0x00000181B953DE10>,5e-05,2048.0,0.99
