@@ -58,6 +58,8 @@ def evaluate_model_sb3(model, env, num_episodes=10):
         
         portfolio_values = []
         weights_list = []
+        dates = []
+        initial_capital = 1000000
         
         # ===== COLLECT DATA DURING EPISODE =====
         while not done:
@@ -65,12 +67,19 @@ def evaluate_model_sb3(model, env, num_episodes=10):
             obs, reward, done, info = env.step(action)
             
             # Extract from info dict (VecEnv returns list of dicts)
+            dates.append(info[0]['date'])
             portfolio_values.append(info[0]['portfolio_value'])
             weights_list.append(info[0]['weights'].copy())
         
         # Convert to arrays
         portfolio_values = np.array(portfolio_values)
         weights_array = np.array(weights_list)
+
+        # build portfolio values dataframe
+        portfolio_df = pd.DataFrame({
+            'date': dates,
+            'portfolio_value': portfolio_values
+        })
         
         # ===== CALCULATE METRICS =====
         
@@ -78,7 +87,7 @@ def evaluate_model_sb3(model, env, num_episodes=10):
         daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
         
         # Total return over period
-        total_return = (portfolio_values[-1] - portfolio_values[0]) / portfolio_values[0]
+        total_return = (portfolio_values[-1] - initial_capital) / initial_capital
         n_days = len(daily_returns)
         
         # Annualized return (convert from daily to annual)
@@ -124,6 +133,7 @@ def evaluate_model_sb3(model, env, num_episodes=10):
             'max_drawdown': max_drawdown,
             'sortino_ratio': sortino_ratio,
             'avg_weights': avg_weights,
+            'portfolio_df': portfolio_df
         })
     
     # ===== RETURN LAST EPISODE =====
@@ -137,6 +147,7 @@ def evaluate_model_sb3(model, env, num_episodes=10):
         'sortino_ratio': last['sortino_ratio'],
         'portfolio_values': last['portfolio_values'],
         'avg_weights': last['avg_weights'],
+        'portfolio_df': last['portfolio_df']
     }
 
 class LoggerCallback(BaseCallback):

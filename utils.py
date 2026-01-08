@@ -9,7 +9,7 @@ import os
 def date_index(price_data, date_string: str) -> int:
     '''converts date string to nearest following trading date index'''
     ts = pd.to_datetime(date_string)
-    loc = int(price_data.index.get_indexer([ts], method='bfill')[0])
+    loc = int(price_data.index.get_indexer([ts], method='ffill')[0])
 
     return loc
 
@@ -29,13 +29,7 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
     # pandas Series for robust indexing
     portfolio_values = pd.Series(np.nan, index=price_data.index, dtype=float)
 
-    port_initial_date = pd.to_datetime(port_initial_date)
-    try:
-        initial_loc = price_data.index.get_loc(port_initial_date) - rebalance_frequency
-    except KeyError:
-        initial_loc = int(price_data.index.get_indexer([port_initial_date], method='bfill')[0]) - rebalance_frequency
-    initial_loc = max(0, initial_loc)
-
+    initial_loc = date_index(price_data, port_initial_date)
     # set starting portfolio value at initial_loc
     portfolio_values.iloc[initial_loc] = initial_capital
 
@@ -153,8 +147,7 @@ hpt_columns = [
     'sharpe_ratio',
     'max_drawdown',
     'annualized_volatility',
-    'sortino_ratio',
-    'portfolio_values'
+    'sortino_ratio'
 ]
 
 if not os.path.exists(hpt_log_file):
@@ -172,8 +165,7 @@ def log_hpt_results(model_name, hyperparams, total_timesteps, eval_results):
         'sharpe_ratio': eval_results.get('sharpe_ratio'),
         'max_drawdown': eval_results.get('max_drawdown'),
         'annualized_volatility': eval_results.get('annualized_volatility'),
-        'sortino_ratio': eval_results.get('sortino_ratio'),
-        'portfolio_values': eval_results.get('portfolio_values')
+        'sortino_ratio': eval_results.get('sortino_ratio')            
     }
     # Add hyperparameters
     row.update(hyperparams)
