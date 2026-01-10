@@ -129,6 +129,92 @@ def buy_and_hold(price_data, port_initial_date, initial_capital:float):
 
     return results
 
+def cal_indicator(price_data:pd.DataFrame, port_initial_date:str):
+    '''
+    Calculates technical indicators and appends them to the price dataframe
+    Indicators calculated:
+    1. MACD (MACD line and signal line)
+    2. RSI (Relative Strength Index)
+    3. ATR (Average True Range)
+    4. ADX (Average Directional Index)
+    
+    Returns: DataFrame with original prices + all indicators
+    '''
+    port_initial_index = date_index(price_data, port_initial_date)
+    result_df = price_data.copy()
+
+    # 1. Calculate MACD
+    short_ema = price_data.ewm(span=12, adjust=False).mean()
+    long_ema = price_data.ewm(span=26, adjust=False).mean()
+    macd = short_ema - long_ema
+    signal = macd.ewm(span=9, adjust=False).mean()
+    
+    # Append MACD to result
+    for col in price_data.columns:
+        result_df[f'{col}_MACD'] = macd[col]
+        result_df[f'{col}_Signal'] = signal[col]
+
+    # 2. Calculate RSI
+    def calculate_rsi(series, window=14):
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    for col in price_data.columns:
+        result_df[f'{col}_RSI'] = calculate_rsi(price_data[col])
+
+    # 3. Calculate ATR
+    def calculate_atr(high, low, close, window=14):
+        tr1 = high - low
+        tr2 = np.abs(high - close.shift())
+        tr3 = np.abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=window).mean()
+        return atr
+    
+    for col in price_data.columns:
+        price_col = price_data[col]
+        high_proxy = price_col * 1.005
+        low_proxy = price_col * 0.995
+        result_df[f'{col}_ATR'] = calculate_atr(high_proxy, low_proxy, price_col, window=14)
+
+    # 4. Calculate ADX
+    def calculate_adx(high, low, close, window=14):
+        tr1 = high - low
+        tr2 = np.abs(high - close.shift())
+        tr3 = np.abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=window).mean()
+        
+        high_diff = high.diff()
+        low_diff = -low.diff()
+        
+        plus_dm = pd.Series(0.0, index=high.index)
+        minus_dm = pd.Series(0.0, index=high.index)
+        
+        plus_dm[(high_diff > 0) & (high_diff > low_diff)] = high_diff[(high_diff > 0) & (high_diff > low_diff)]
+        minus_dm[(low_diff > 0) & (low_diff > high_diff)] = low_diff[(low_diff > 0) & (low_diff > high_diff)]
+        
+        plus_di = 100 * (plus_dm.rolling(window=window).mean() / (atr + 1e-6))
+        minus_di = 100 * (minus_dm.rolling(window=window).mean() / (atr + 1e-6))
+        
+        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-6)
+        adx = dx.rolling(window=window).mean()
+        
+        return adx
+    
+    for col in price_data.columns:
+        price_col = price_data[col]
+        high_proxy = price_col * 1.005
+        low_proxy = price_col * 0.995
+        result_df[f'{col}_ADX'] = calculate_adx(high_proxy, low_proxy, price_col, window=14)
+    
+    return result_df[port_initial_index:]
+
+
 hpt_log_file = 'tables/hpt_log.csv'
 hpt_columns = [
     'timestamp',
