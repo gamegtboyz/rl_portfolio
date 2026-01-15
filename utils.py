@@ -9,7 +9,7 @@ import os
 def date_index(price_data, date_string: str) -> int:
     '''converts date string to nearest following trading date index'''
     ts = pd.to_datetime(date_string)
-    loc = int(price_data.index.get_indexer([ts], method='ffill')[0])
+    loc = int(price_data.index.get_indexer([ts], method='bfill')[0])
 
     return loc
 
@@ -83,7 +83,7 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
     cumulative_return = (portfolio_values.iloc[-1] / initial_capital) - 1
     annualized_return = ((1 + cumulative_return) ** (1 / (len(portfolio_values) / 252))) - 1
     volatility = portfolio_values.pct_change().std() * np.sqrt(252)
-    sharpe_ratio = (annualized_return - 0.03) / volatility if volatility != 0 else 0
+    sharpe_ratio = (annualized_return - rf_rate) / volatility if volatility != 0 else 0
     max_drawdown = qs.stats.max_drawdown(portfolio_values)
 
     results = {
@@ -115,7 +115,7 @@ def buy_and_hold(price_data, port_initial_date, initial_capital:float):
     cumulative_return = (portfolio_values.iloc[-1]/initial_capital) - 1
     annualized_return = ((cumulative_return+1)**(1/(len(portfolio_values)/252))) - 1
     volatility = portfolio_values.pct_change().std() * np.sqrt(252)
-    sharpe_ratio = (annualized_return - 0.03) / volatility if volatility != 0 else 0
+    sharpe_ratio = (annualized_return - rf_rate) / volatility if volatility != 0 else 0
     max_drawdown = qs.stats.max_drawdown(portfolio_values)
 
     results = {
@@ -263,3 +263,6 @@ def log_hpt_results(model_name, hyperparams, total_timesteps, eval_results):
     print(f"✓ Logged {model_name} results to {hpt_log_file}")
 
 print("✓ Hyperparameter tracking initialized!")
+
+rf_data = pd.read_csv('tables/TB3MS.csv', index_col=0, parse_dates=True)
+rf_rate = rf_data['TB3MS'].mean()
