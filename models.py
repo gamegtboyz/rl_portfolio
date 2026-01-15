@@ -1,4 +1,4 @@
-from utils import date_index, rf_rate
+from utils import date_index, rf_rate, get_rf_rate
 import pandas as pd
 import numpy as np
 import quantstats as qs
@@ -100,6 +100,17 @@ def rolling_split_build_normalize_env(price_data: pd.DataFrame,
         train_data = price_data.iloc[train_start_idx:train_end_idx + 1]
         test_data = price_data.iloc[max(0, test_start_idx - lookback_period):test_end_idx + 1]
         
+        # Skip if test data is empty or if we have too little test data for meaningful evaluation
+        if len(test_data) == 0:
+            print(f">>> Iteration {iteration}: No test data available. Stopping rolling test.")
+            break
+        
+        # Check if we have at least lookback_period + 1 trading days of test data
+        test_data_length = len(test_data)
+        if test_data_length <= 21:  # Less than a month of test data
+            print(f">>> Iteration {iteration}: Insufficient test data ({test_data_length} days). Stopping rolling test.")
+            break
+        
         # Build normalized train environment
         train_env = DummyVecEnv([lambda data=train_data, cap=current_capital: PortfolioEnv(
             price_data=data,
@@ -133,8 +144,10 @@ def rolling_split_build_normalize_env(price_data: pd.DataFrame,
         train_end = train_end + relativedelta(years=step_years)
         iteration += 1
         
-        # Stop if test period has reached the end date
-        if test_period_end >= test_end:
+        # Stop if test period has reached the end date (or beyond available data)
+        data_end_date = pd.to_datetime(price_data.index[-1])
+        if test_period_end >= test_end or test_period_end >= data_end_date:
+            print(f">>> Iteration {iteration}: Reached end of test period or data (test_period_end={test_period_end.strftime('%Y-%m-%d')}, data_end={data_end_date.strftime('%Y-%m-%d')}). Stopping rolling test.")
             break
 
 def conduct_rolling_robustness_test(model_class, 
@@ -451,7 +464,7 @@ def evaluate_model_sb3(model, env, num_episodes=10):
         annualized_volatility = np.std(daily_returns) * np.sqrt(252)
         
         sharpe_ratio = (
-            (annualized_return - rf_rate) / annualized_volatility 
+            (annualized_return - get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')) / annualized_volatility 
             if annualized_volatility > 0 else 0
         )
         
@@ -469,7 +482,7 @@ def evaluate_model_sb3(model, env, num_episodes=10):
             downside_dev = annualized_volatility  # Fallback
         
         sortino_ratio = (
-            (annualized_return - rf_rate) / downside_dev 
+            (annualized_return - get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')) / downside_dev 
             if downside_dev > 0 else 0
         )
         
@@ -656,7 +669,7 @@ def evaluate_model_onnx(ort_session, env, num_episodes=10):
         
         annualized_return = (1 + total_return) ** (252 / n_periods) - 1
         annualized_volatility = np.std(returns) * np.sqrt(252)
-        sharpe_ratio = (annualized_return - rf_rate) / annualized_volatility if annualized_volatility > 0 else 0
+        sharpe_ratio = (annualized_return - get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')) / annualized_volatility if annualized_volatility > 0 else 0
         
         cumulative = np.cumprod(1 + returns)
         running_max = np.maximum.accumulate(cumulative)
@@ -956,3 +969,120 @@ def export_multi_seed_hyperparameters_to_csv(multi_seed_results: dict, output_fi
     # Save to CSV
     df.to_csv(output_filepath, index=False)
     print(f"Multi-seed hyperparameters and stats exported to {output_filepath}")
+
+def export_cumulative_period_results(multi_seed_results: dict, output_dir: str):
+    """
+    Export cumulative results for the entire test period (all iterations combined).
+    
+    This calculates performance metrics for the complete test period (e.g., 2019-2024)
+    by combining all iteration results for each seed, then exports:
+    - {model}_cumulative_period_stats.csv: Per-seed cumulative metrics
+    - {model}_cumulative_period_summary.csv: Mean/std across all seeds for cumulative metrics
+    
+    Args:
+        multi_seed_results (dict): Output from conduct_multi_seed_rolling_test()
+        output_dir (str): Directory to save output files
+    """
+    import os
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    model_name = multi_seed_results['hyperparameters']['model_class']
+    
+    # Aggregate portfolio values for each seed across all iterations
+    cumulative_metrics = []
+    
+    for seed, seed_results in multi_seed_results['all_seeds_results'].items():
+        # Combine all portfolio values from each iteration
+        all_portfolio_values = []
+        dates = []
+        
+        for iteration_result in seed_results['all_results']:
+            portfolio_df = iteration_result['portfolio_df']
+            all_portfolio_values.extend(portfolio_df['portfolio_value'].values)
+            dates.extend(portfolio_df['date'].values)
+        
+        if len(all_portfolio_values) == 0:
+            continue
+        
+        # Create cumulative portfolio series
+        portfolio_values = pd.Series(all_portfolio_values)
+        initial_capital = seed_results['all_results'][0]['starting_capital']
+        
+        # Calculate metrics for cumulative period
+        total_return = (portfolio_values.iloc[-1] / portfolio_values.iloc[0]) - 1
+        cumulative_days = len(portfolio_values)
+        annualized_return = ((1 + total_return) ** (252 / cumulative_days)) - 1
+        
+        # Volatility
+        daily_returns = portfolio_values.pct_change().dropna()
+        annualized_volatility = daily_returns.std() * np.sqrt(252)
+        
+        # Sharpe Ratio (using period-specific risk-free rate)
+        # Get the date range for the entire test period
+        test_start_date = seed_results['all_results'][0]['test_start_date']
+        test_end_date = seed_results['all_results'][-1]['test_end_date']
+        
+        try:
+            # Use the new get_rf_rate function with period-specific dates
+            rf_rate = get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')
+        except:
+            # Fallback to default if period-specific calculation fails
+            rf_rate = 0.02  # Assume 2% if not available
+        
+        if annualized_volatility > 0:
+            sharpe_ratio = (annualized_return - rf_rate) / annualized_volatility
+        else:
+            sharpe_ratio = 0
+        
+        # Max Drawdown
+        cumulative_max = portfolio_values.expanding().max()
+        drawdown = (portfolio_values - cumulative_max) / cumulative_max
+        max_drawdown = drawdown.min()
+        
+        # Sortino Ratio (only negative returns for downside volatility)
+        downside_returns = daily_returns[daily_returns < 0]
+        downside_volatility = downside_returns.std() * np.sqrt(252)
+        if downside_volatility > 0:
+            sortino_ratio = (annualized_return - rf_rate) / downside_volatility
+        else:
+            sortino_ratio = 0 if annualized_return <= rf_rate else np.inf
+        
+        cumulative_metrics.append({
+            'seed': seed,
+            'test_period': f"{test_start_date} to {test_end_date}",
+            'cumulative_return': total_return,
+            'annualized_return': annualized_return,
+            'annualized_volatility': annualized_volatility,
+            'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sortino_ratio,
+            'max_drawdown': max_drawdown,
+            'final_portfolio_value': portfolio_values.iloc[-1],
+            'cumulative_trading_days': cumulative_days,
+        })
+    
+    # Export per-seed cumulative results
+    cumulative_df = pd.DataFrame(cumulative_metrics)
+    cumulative_path = os.path.join(output_dir, f'{model_name}_cumulative_period_stats.csv')
+    cumulative_df.to_csv(cumulative_path, index=False)
+    print(f"Cumulative period statistics (per seed) exported to {cumulative_path}")
+    
+    # Export summary statistics (mean/std across seeds)
+    if len(cumulative_metrics) > 0:
+        summary_metrics = []
+        for metric_name in ['cumulative_return', 'annualized_return', 'annualized_volatility', 
+                            'sharpe_ratio', 'sortino_ratio', 'max_drawdown', 'final_portfolio_value']:
+            values = [m[metric_name] for m in cumulative_metrics]
+            summary_metrics.append({
+                'metric': metric_name,
+                'mean': np.mean(values),
+                'std': np.std(values),
+                'min': np.min(values),
+                'max': np.max(values),
+            })
+        
+        summary_df = pd.DataFrame(summary_metrics)
+        summary_path = os.path.join(output_dir, f'{model_name}_cumulative_period_summary.csv')
+        summary_df.to_csv(summary_path, index=False)
+        print(f"Cumulative period summary (mean/std across seeds) exported to {summary_path}")

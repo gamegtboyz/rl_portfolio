@@ -7,11 +7,86 @@ from datetime import datetime
 import os
 
 def date_index(price_data, date_string: str) -> int:
-    '''converts date string to nearest following trading date index'''
+    '''
+    Converts date string to nearest following trading date index.
+    If the exact date or a forward-fill date doesn't exist, returns the last available index.
+    '''
     ts = pd.to_datetime(date_string)
     loc = int(price_data.index.get_indexer([ts], method='bfill')[0])
-
+    
+    # Handle case where bfill returns -1 (date is beyond all data)
+    if loc == -1:
+        loc = len(price_data) - 1  # Return last available index
+    
     return loc
+
+def calculate_mean_for_period(data: pd.DataFrame, start_date: str = None, end_date: str = None, column: str = None) -> float:
+    '''
+    Calculate the mean for a specified date range in a DataFrame.
+    
+    Args:
+        data (pd.DataFrame): DataFrame with DatetimeIndex
+        start_date (str): Start date in format 'YYYY-MM-DD'. If None, uses earliest date in data
+        end_date (str): End date in format 'YYYY-MM-DD'. If None, uses latest date in data
+        column (str): Column name to calculate mean for. If None, uses all numeric columns
+    
+    Returns:
+        float: Mean value for the specified period and column(s)
+    
+    Example:
+        rf_rate = calculate_mean_for_period(rf_data, start_date='2010-01-01', end_date='2024-12-31', column='TB3MS')
+    '''
+    # Ensure index is datetime
+    data = data.copy()
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index)
+    
+    # Set default dates if not provided
+    if start_date is None:
+        start_date = data.index.min()
+    else:
+        start_date = pd.to_datetime(start_date)
+    
+    if end_date is None:
+        end_date = data.index.max()
+    else:
+        end_date = pd.to_datetime(end_date)
+    
+    # Slice data for the specified period
+    period_data = data.loc[start_date:end_date]
+    
+    # Calculate mean
+    if column is not None:
+        if column in period_data.columns:
+            return float(period_data[column].mean()/100)
+        else:
+            raise ValueError(f"Column '{column}' not found in DataFrame. Available columns: {list(period_data.columns)}")
+    else:
+        # If no column specified, return mean of all numeric data
+        return float(period_data.mean().mean()/100)
+
+def get_rf_rate(start_date: str = None, end_date: str = None) -> float:
+    '''
+    Get the risk-free rate (mean of TB3MS) for a specified period.
+    
+    Args:
+        start_date (str): Start date in format 'YYYY-MM-DD'. If None, uses earliest available date
+        end_date (str): End date in format 'YYYY-MM-DD'. If None, uses latest available date
+    
+    Returns:
+        float: Risk-free rate (mean TB3MS value) for the specified period
+    
+    Example:
+        # Get overall risk-free rate
+        rf_rate = get_rf_rate()
+        
+        # Get risk-free rate for a specific period
+        rf_rate_2010_2018 = get_rf_rate(start_date='2010-01-01', end_date='2018-12-31')
+        
+        # Get risk-free rate for training period
+        rf_rate_train = get_rf_rate(start_date=train_start_date, end_date=train_end_date)
+    '''
+    return calculate_mean_for_period(rf_data, start_date=start_date, end_date=end_date, column='TB3MS')
 
 def orderdict_nparray(dict):
     '''convert OrderedDict to numpy array'''
@@ -83,7 +158,7 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
     cumulative_return = (portfolio_values.iloc[-1] / initial_capital) - 1
     annualized_return = ((1 + cumulative_return) ** (1 / (len(portfolio_values) / 252))) - 1
     volatility = portfolio_values.pct_change().std() * np.sqrt(252)
-    sharpe_ratio = (annualized_return - rf_rate) / volatility if volatility != 0 else 0
+    sharpe_ratio = (annualized_return - get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')) / volatility if volatility != 0 else 0
     max_drawdown = qs.stats.max_drawdown(portfolio_values)
 
     results = {
@@ -115,7 +190,7 @@ def buy_and_hold(price_data, port_initial_date, initial_capital:float):
     cumulative_return = (portfolio_values.iloc[-1]/initial_capital) - 1
     annualized_return = ((cumulative_return+1)**(1/(len(portfolio_values)/252))) - 1
     volatility = portfolio_values.pct_change().std() * np.sqrt(252)
-    sharpe_ratio = (annualized_return - rf_rate) / volatility if volatility != 0 else 0
+    sharpe_ratio = (annualized_return - get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')) / volatility if volatility != 0 else 0
     max_drawdown = qs.stats.max_drawdown(portfolio_values)
 
     results = {

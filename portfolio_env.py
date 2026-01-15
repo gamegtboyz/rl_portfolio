@@ -37,7 +37,9 @@ class PortfolioEnv(gym.Env):
         self.portfolio_history = [self.initial_capital]
         self.prev_portfolio_value = self.initial_capital        
         obs = self.build_observation()
-        info = {"step": self.current_step, "portfolio_value": self.portfolio_value, "date": self.dates[self.current_step]}
+        # Ensure current_step is within bounds of dates index
+        step_idx = min(self.current_step, len(self.dates) - 1)
+        info = {"step": self.current_step, "portfolio_value": self.portfolio_value, "date": self.dates[step_idx] if len(self.dates) > 0 else None}
         return (obs, info)
     
     def build_feature_tensor(self, price_df=None):
