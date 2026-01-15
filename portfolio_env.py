@@ -186,22 +186,37 @@ class PortfolioEnv(gym.Env):
         return obs
     
     def cal_reward(self, new_value, old_value, turnover):
-        '''SIMPLE RAW RETURN REWARD - BACK TO BASICS
+        '''RAW RETURN REWARD WITH VOLATILITY PENALTY
         
-        Lesson: Volatility adjustment was WRONG in bear markets.
-        - Higher vol = suppressed reward signal
-        - But in bear markets we NEED strong learning signal!
+        Components:
+        1. Return Reward: pct_return * 100.0 (strong scaling for clear signal)
+        2. Turnover Penalty: turnover * 1.0 (discourage excessive trading)
+        3. Volatility Penalty: risk_aversion * volatility (penalize high volatility)
         
-        Fix: Use raw return rewards scaled 100x
-        - Daily return of +0.1% → reward +0.01 (after scaling)
-        - Daily return of -0.1% → reward -0.01
-        - Turnover cost: 1% turnover → -1.0 reward
-        - CLEAR GRADIENTS in all market conditions
+        Volatility is calculated from recent portfolio returns (last 20 days).
+        This encourages the agent to maintain smoother portfolio paths.
         '''
+        # 1. Calculate return reward
         pct_return = (new_value / (old_value + 1e-6)) - 1
         reward = pct_return * 100.0  # Strong scaling for clear signal
-        turnover_penalty = turnover * 1.0  # Simple 1:1 penalty
-        reward -= turnover_penalty
+        
+        # 2. Turnover penalty
+        turnover_penalty = turnover 
+        reward -= turnover_penalty * 1.0  # Simple 1:1 penalty
+        
+        # 3. Volatility penalty (based on recent portfolio returns)
+        if len(self.portfolio_history) >= 20:
+            # Calculate returns from last 20 portfolio values
+            recent_values = np.array(self.portfolio_history[-20:])
+            recent_returns = np.diff(recent_values) / recent_values[:-1]
+            
+            # Calculate volatility (standard deviation of returns)
+            volatility = np.std(recent_returns) 
+            
+            # Apply volatility penalty scaled by risk_aversion parameter
+            volatility_penalty = self.risk_aversion * volatility
+            reward -= volatility_penalty * 100.0  # Scale to match reward scale
+        
         return float(reward)
     
     def step(self, action):

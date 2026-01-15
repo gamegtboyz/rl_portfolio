@@ -35,7 +35,8 @@ def rolling_split_build_normalize_env(price_data: pd.DataFrame,
                                       train_end_date: str,
                                       test_end_date: str,
                                       lookback_period: int,
-                                      step_years: int = 1):
+                                      step_years: int = 1,
+                                      initial_capital: float = 1000000):
     """
     Rolling window train/test split for robustness testing.
     
@@ -52,6 +53,7 @@ def rolling_split_build_normalize_env(price_data: pd.DataFrame,
         test_end_date (str): Final testing end date (e.g., '2024-12-31')
         lookback_period (int): Lookback period for the environment
         step_years (int): Number of years to roll forward each iteration (default: 1)
+        initial_capital (float): Initial capital for first iteration (default: 1000000)
     
     Yields:
         dict: Contains:
@@ -75,6 +77,7 @@ def rolling_split_build_normalize_env(price_data: pd.DataFrame,
                         (train_end.month - train_start.month) / 12
     
     iteration = 0
+    current_capital = initial_capital
     
     while True:
         # Get test period start (day after training ends)
@@ -98,17 +101,19 @@ def rolling_split_build_normalize_env(price_data: pd.DataFrame,
         test_data = price_data.iloc[max(0, test_start_idx - lookback_period):test_end_idx + 1]
         
         # Build normalized train environment
-        train_env = DummyVecEnv([lambda data=train_data: PortfolioEnv(
+        train_env = DummyVecEnv([lambda data=train_data, cap=current_capital: PortfolioEnv(
             price_data=data,
             lookback_period=lookback_period,
+            initial_capital=cap,
             transaction_cost=0.0005,
             risk_aversion=0.01)])
         train_env = VecNormalize(train_env)
         
         # Build normalized test environment
-        test_env = DummyVecEnv([lambda data=test_data: PortfolioEnv(
+        test_env = DummyVecEnv([lambda data=test_data, cap=current_capital: PortfolioEnv(
             price_data=data,
             lookback_period=lookback_period,
+            initial_capital=cap,
             transaction_cost=0.0015)])
         test_env = VecNormalize(test_env, training=False, norm_reward=False)
         
@@ -119,7 +124,8 @@ def rolling_split_build_normalize_env(price_data: pd.DataFrame,
             'train_end_date': train_end.strftime('%Y-%m-%d'),
             'test_start_date': test_start.strftime('%Y-%m-%d'),
             'test_end_date': test_period_end.strftime('%Y-%m-%d'),
-            'iteration': iteration
+            'iteration': iteration,
+            'initial_capital': current_capital
         }
         
         # Roll forward by step_years
@@ -140,12 +146,15 @@ def conduct_rolling_robustness_test(model_class,
                                    step_years: int = 1,
                                    total_timesteps: int = 100000,
                                    eval_episodes: int = 10,
+                                   initial_capital: float = 1000000,
                                    **model_kwargs):
     """
     Conduct rolling robustness test across multiple train/test windows.
     
     This function trains a model on rolling windows of historical data and evaluates
-    on subsequent test periods, aggregating results across all iterations.
+    on subsequent test periods. Portfolio values carry forward across iterations:
+    - Iteration 0 starts with initial_capital
+    - Iteration 1+ starts with the final portfolio value from the previous iteration
     
     Args:
         model_class: SB3 Model class (A2C, PPO, DDPG, SAC)
@@ -156,7 +165,8 @@ def conduct_rolling_robustness_test(model_class,
         lookback_period (int): Lookback period (default: 21)
         step_years (int): Years to roll forward (default: 1)
         total_timesteps (int): Timesteps per training iteration
-        eval_episodes (int): Episodes for evaluation (default: 1)
+        eval_episodes (int): Episodes for evaluation (default: 10)
+        initial_capital (float): Initial capital for first iteration (default: 1000000)
         **model_kwargs: Additional arguments for model_class constructor
     
     Returns:
@@ -170,6 +180,7 @@ def conduct_rolling_robustness_test(model_class,
     
     all_results = []
     portfolio_values_all = {}
+    current_capital = initial_capital
     
     # Store hyperparameters for logging
     hyperparameters = {
@@ -181,6 +192,7 @@ def conduct_rolling_robustness_test(model_class,
         'step_years': step_years,
         'total_timesteps': total_timesteps,
         'eval_episodes': eval_episodes,
+        'initial_capital': initial_capital,
         **model_kwargs  # Include all model-specific hyperparameters
     }
     
@@ -191,16 +203,19 @@ def conduct_rolling_robustness_test(model_class,
         train_end_date=train_end_date,
         test_end_date=test_end_date,
         lookback_period=lookback_period,
-        step_years=step_years
+        step_years=step_years,
+        initial_capital=current_capital
     ):
         iteration = split_data['iteration']
         train_env = split_data['train_env']
         test_env = split_data['test_env']
+        iteration_start_capital = split_data['initial_capital']
         
         print(f"\n{'='*70}")
         print(f"ITERATION {iteration}")
         print(f"Training: {split_data['train_start_date']} to {split_data['train_end_date']}")
         print(f"Testing: {split_data['test_start_date']} to {split_data['test_end_date']}")
+        print(f"Starting Capital: ${iteration_start_capital:,.2f}")
         print(f"{'='*70}")
         
         # Train model
@@ -210,6 +225,10 @@ def conduct_rolling_robustness_test(model_class,
         # Evaluate on test set
         eval_results = evaluate_model_sb3(model, test_env, num_episodes=eval_episodes)
         
+        # Get final portfolio value for next iteration
+        final_portfolio_value = eval_results['portfolio_values'][-1]
+        current_capital = final_portfolio_value
+        
         # Store results with metadata
         iteration_results = {
             'iteration': iteration,
@@ -217,6 +236,8 @@ def conduct_rolling_robustness_test(model_class,
             'train_end_date': split_data['train_end_date'],
             'test_start_date': split_data['test_start_date'],
             'test_end_date': split_data['test_end_date'],
+            'starting_capital': iteration_start_capital,
+            'final_portfolio_value': final_portfolio_value,
             **eval_results  # Unpack evaluation metrics
         }
         
@@ -232,7 +253,9 @@ def conduct_rolling_robustness_test(model_class,
         print(f"Annualized Return: {eval_results['annualized_return']:.4f}")
         print(f"Sharpe Ratio: {eval_results['sharpe_ratio']:.4f}")
         print(f"Max Drawdown: {eval_results['max_drawdown']:.4f}")
-        print(f"Final Portfolio Value: {eval_results['portfolio_values'][-1]:,.0f}")
+        print(f"Final Portfolio Value: ${final_portfolio_value:,.2f}")
+        cumulative_return = ((final_portfolio_value - initial_capital) / initial_capital) * 100
+        print(f"Cumulative Return from Initial Capital: {cumulative_return:.2f}%")
     
     # Calculate summary statistics
     returns = [r['annualized_return'] for r in all_results]
@@ -257,6 +280,8 @@ def conduct_rolling_robustness_test(model_class,
         'max_return': np.max(returns),
         'min_sharpe': np.min(sharpe_ratios),
         'max_sharpe': np.max(sharpe_ratios),
+        'final_portfolio_value': current_capital,
+        'total_return': ((current_capital - initial_capital) / initial_capital) * 100,
     }
     
     return {
@@ -663,3 +688,271 @@ def evaluate_model_onnx(ort_session, env, num_episodes=10):
     }
     
     return summary
+
+def conduct_multi_seed_rolling_test(model_class,
+                                    price_data: pd.DataFrame,
+                                    train_start_date: str,
+                                    train_end_date: str,
+                                    test_end_date: str,
+                                    lookback_period: int = 21,
+                                    step_years: int = 1,
+                                    total_timesteps: int = 100000,
+                                    eval_episodes: int = 10,
+                                    initial_capital: float = 1000000,
+                                    seeds: list = None,
+                                    **model_kwargs):
+    """
+    Conduct rolling robustness test with multiple random seeds.
+    
+    This function runs the rolling robustness test multiple times with different seeds,
+    collecting results from each run and computing mean/std statistics.
+    
+    Args:
+        model_class: SB3 Model class (A2C, PPO, DDPG, SAC)
+        price_data (pd.DataFrame): Full price data with DatetimeIndex
+        train_start_date (str): Initial training start date
+        train_end_date (str): Initial training end date
+        test_end_date (str): Final testing end date
+        lookback_period (int): Lookback period (default: 21)
+        step_years (int): Years to roll forward (default: 1)
+        total_timesteps (int): Timesteps per training iteration
+        eval_episodes (int): Episodes for evaluation (default: 10)
+        initial_capital (float): Initial capital for first iteration (default: 1000000)
+        seeds (list): List of random seeds (default: [0, 1, 2, 3, 4])
+        **model_kwargs: Additional arguments for model_class constructor
+    
+    Returns:
+        dict: Contains:
+            - 'all_seeds_results': Dict mapping seed -> results from conduct_rolling_robustness_test()
+            - 'mean_stats': Mean statistics across all seeds
+            - 'std_stats': Standard deviation statistics across all seeds
+            - 'hyperparameters': Dict of all hyperparameters used
+    """
+    if seeds is None:
+        seeds = [0, 1, 2, 3, 4]
+    
+    all_seeds_results = {}
+    
+    # Store hyperparameters for logging
+    hyperparameters = {
+        'model_class': model_class.__name__,
+        'train_start_date': train_start_date,
+        'train_end_date': train_end_date,
+        'test_end_date': test_end_date,
+        'lookback_period': lookback_period,
+        'step_years': step_years,
+        'total_timesteps': total_timesteps,
+        'eval_episodes': eval_episodes,
+        'initial_capital': initial_capital,
+        'seeds': seeds,
+        'num_seeds': len(seeds),
+        **model_kwargs
+    }
+    
+    print(f"\n{'='*70}")
+    print(f"MULTI-SEED ROLLING TEST: {model_class.__name__}")
+    print(f"Total Seeds: {len(seeds)}")
+    print(f"Seeds: {seeds}")
+    print(f"{'='*70}\n")
+    
+    # Run test for each seed
+    for seed in seeds:
+        print(f"\n>>> Running test with seed: {seed}")
+        
+        # Set seed for reproducibility
+        np.random.seed(seed)
+        th.manual_seed(seed)
+        
+        # Run rolling test
+        results = conduct_rolling_robustness_test(
+            model_class=model_class,
+            price_data=price_data,
+            train_start_date=train_start_date,
+            train_end_date=train_end_date,
+            test_end_date=test_end_date,
+            lookback_period=lookback_period,
+            step_years=step_years,
+            total_timesteps=total_timesteps,
+            eval_episodes=eval_episodes,
+            initial_capital=initial_capital,
+            **{k: v for k, v in model_kwargs.items() if k not in ['seed']}
+        )
+        
+        all_seeds_results[seed] = results
+        print(f"<<< Completed seed: {seed}")
+    
+    # Calculate aggregate statistics
+    mean_stats, std_stats = _compute_seed_statistics(all_seeds_results)
+    
+    return {
+        'all_seeds_results': all_seeds_results,
+        'mean_stats': mean_stats,
+        'std_stats': std_stats,
+        'hyperparameters': hyperparameters
+    }
+
+def _compute_seed_statistics(all_seeds_results: dict) -> Tuple[dict, dict]:
+    """
+    Compute mean and standard deviation statistics across all seeds.
+    
+    Args:
+        all_seeds_results (dict): Dict mapping seed -> results from conduct_rolling_robustness_test()
+    
+    Returns:
+        tuple: (mean_stats, std_stats) dicts containing aggregated statistics
+    """
+    # Extract all summary stats from each seed
+    all_summary_stats = [results['summary_stats'] for results in all_seeds_results.values()]
+    
+    # Extract all iteration-level results
+    all_iterations = [results['all_results'] for results in all_seeds_results.values()]
+    
+    # Compute statistics for summary-level metrics
+    metrics_to_aggregate = [
+        'mean_annualized_return', 'std_annualized_return',
+        'mean_sharpe_ratio', 'std_sharpe_ratio',
+        'mean_max_drawdown', 'std_max_drawdown',
+        'mean_volatility', 'std_volatility',
+        'mean_sortino_ratio', 'std_sortino_ratio',
+        'min_return', 'max_return', 'min_sharpe', 'max_sharpe',
+        'final_portfolio_value', 'total_return'
+    ]
+    
+    mean_stats = {}
+    std_stats = {}
+    
+    for metric in metrics_to_aggregate:
+        values = [stats[metric] for stats in all_summary_stats if metric in stats]
+        if values:
+            mean_stats[metric] = np.mean(values)
+            std_stats[metric] = np.std(values)
+    
+    # Compute iteration-level statistics
+    # Organize by iteration number
+    iterations_by_num = {}
+    for seed_idx, iterations in enumerate(all_iterations):
+        for iteration_data in iterations:
+            iter_num = iteration_data['iteration']
+            if iter_num not in iterations_by_num:
+                iterations_by_num[iter_num] = []
+            iterations_by_num[iter_num].append(iteration_data)
+    
+    mean_stats['iterations'] = {}
+    std_stats['iterations'] = {}
+    
+    for iter_num in sorted(iterations_by_num.keys()):
+        iter_data_list = iterations_by_num[iter_num]
+        
+        mean_stats['iterations'][iter_num] = {
+            'mean_annualized_return': np.mean([d['annualized_return'] for d in iter_data_list]),
+            'mean_sharpe_ratio': np.mean([d['sharpe_ratio'] for d in iter_data_list]),
+            'mean_max_drawdown': np.mean([d['max_drawdown'] for d in iter_data_list]),
+            'mean_annualized_volatility': np.mean([d['annualized_volatility'] for d in iter_data_list]),
+            'mean_final_portfolio_value': np.mean([d['final_portfolio_value'] for d in iter_data_list]),
+        }
+        
+        std_stats['iterations'][iter_num] = {
+            'std_annualized_return': np.std([d['annualized_return'] for d in iter_data_list]),
+            'std_sharpe_ratio': np.std([d['sharpe_ratio'] for d in iter_data_list]),
+            'std_max_drawdown': np.std([d['max_drawdown'] for d in iter_data_list]),
+            'std_annualized_volatility': np.std([d['annualized_volatility'] for d in iter_data_list]),
+            'std_final_portfolio_value': np.std([d['final_portfolio_value'] for d in iter_data_list]),
+        }
+    
+    return mean_stats, std_stats
+
+def export_multi_seed_results_to_csv(multi_seed_results: dict, output_dir: str):
+    """
+    Export multi-seed results to multiple CSV files.
+    
+    Creates the following files in output_dir:
+    - {model}_seeds_summary_stats.csv: Summary statistics with mean/std
+    - {model}_seeds_iteration_stats.csv: Per-iteration mean/std statistics
+    - {model}_seeds_individual_results_{seed}.csv: Individual results per seed
+    
+    Args:
+        multi_seed_results (dict): Output from conduct_multi_seed_rolling_test()
+        output_dir (str): Directory to save output files
+    """
+    import os
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    model_name = multi_seed_results['hyperparameters']['model_class']
+    
+    # 1. Export summary statistics (mean/std across all seeds)
+    summary_stats_data = []
+    for metric in multi_seed_results['mean_stats'].keys():
+        if metric != 'iterations':
+            summary_stats_data.append({
+                'metric': metric,
+                'mean': multi_seed_results['mean_stats'][metric],
+                'std': multi_seed_results['std_stats'][metric]
+            })
+    
+    summary_df = pd.DataFrame(summary_stats_data)
+    summary_path = os.path.join(output_dir, f'{model_name}_seeds_summary_stats.csv')
+    summary_df.to_csv(summary_path, index=False)
+    print(f"Summary statistics exported to {summary_path}")
+    
+    # 2. Export iteration-level statistics
+    iteration_data = []
+    for iter_num in sorted(multi_seed_results['mean_stats']['iterations'].keys()):
+        row = {
+            'iteration': iter_num,
+            'mean_annualized_return': multi_seed_results['mean_stats']['iterations'][iter_num]['mean_annualized_return'],
+            'std_annualized_return': multi_seed_results['std_stats']['iterations'][iter_num]['std_annualized_return'],
+            'mean_sharpe_ratio': multi_seed_results['mean_stats']['iterations'][iter_num]['mean_sharpe_ratio'],
+            'std_sharpe_ratio': multi_seed_results['std_stats']['iterations'][iter_num]['std_sharpe_ratio'],
+            'mean_max_drawdown': multi_seed_results['mean_stats']['iterations'][iter_num]['mean_max_drawdown'],
+            'std_max_drawdown': multi_seed_results['std_stats']['iterations'][iter_num]['std_max_drawdown'],
+            'mean_annualized_volatility': multi_seed_results['mean_stats']['iterations'][iter_num]['mean_annualized_volatility'],
+            'std_annualized_volatility': multi_seed_results['std_stats']['iterations'][iter_num]['std_annualized_volatility'],
+            'mean_final_portfolio_value': multi_seed_results['mean_stats']['iterations'][iter_num]['mean_final_portfolio_value'],
+            'std_final_portfolio_value': multi_seed_results['std_stats']['iterations'][iter_num]['std_final_portfolio_value'],
+        }
+        iteration_data.append(row)
+    
+    iteration_df = pd.DataFrame(iteration_data)
+    iteration_path = os.path.join(output_dir, f'{model_name}_seeds_iteration_stats.csv')
+    iteration_df.to_csv(iteration_path, index=False)
+    print(f"Iteration statistics exported to {iteration_path}")
+    
+    # 3. Export individual results for each seed
+    for seed, results in multi_seed_results['all_seeds_results'].items():
+        export_rolling_results_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_results.csv'))
+        export_hyperparameters_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_hyperparams.csv'))
+        export_portfolio_values_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_portfolio.csv'))
+
+def export_multi_seed_hyperparameters_to_csv(multi_seed_results: dict, output_filepath: str):
+    """
+    Export multi-seed hyperparameters and aggregated statistics to CSV.
+    
+    Args:
+        multi_seed_results (dict): Output from conduct_multi_seed_rolling_test()
+        output_filepath (str): Path to save hyperparameters CSV
+    """
+    hyperparams = multi_seed_results['hyperparameters'].copy()
+    mean_stats = multi_seed_results['mean_stats'].copy()
+    std_stats = multi_seed_results['std_stats'].copy()
+    
+    # Remove nested 'iterations' dict for CSV export
+    if 'iterations' in mean_stats:
+        del mean_stats['iterations']
+    if 'iterations' in std_stats:
+        del std_stats['iterations']
+    
+    # Combine all data with mean_ and std_ prefixes
+    combined = {**hyperparams}
+    for key, value in mean_stats.items():
+        combined[f'mean_{key}'] = value
+    for key, value in std_stats.items():
+        combined[f'std_{key}'] = value
+    
+    # Create a DataFrame with single row
+    df = pd.DataFrame([combined])
+    
+    # Save to CSV
+    df.to_csv(output_filepath, index=False)
+    print(f"Multi-seed hyperparameters and stats exported to {output_filepath}")
