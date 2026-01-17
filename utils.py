@@ -171,6 +171,140 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
     }
     return results
 
+def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, transaction_cost=0.0015):
+    """
+    Risk-parity portfolio rebalancing strategy using Hierarchical Risk Parity (HRP).
+    
+    Uses pypfopt.HRPOpt to allocate weights based on hierarchical clustering,
+    which provides better diversification than simple inverse volatility weighting.
+    
+    Parameters:
+    -----------
+    price_data : pd.DataFrame
+        Historical price data with assets as columns
+    port_initial_date : str
+        Portfolio start date (YYYY-MM-DD format)
+    lookback_period : int
+        Number of trading days for optimization (default: 21)
+    transaction_cost : float
+        Transaction cost as percentage of turnover (default: 0.0015)
+    
+    Returns:
+    --------
+    dict : Portfolio performance metrics including:
+        - 'portfolio_values': Series of daily portfolio values
+        - 'annualized_return': Annualized return
+        - 'sharpe_ratio': Sharpe ratio
+        - 'max_drawdown': Maximum drawdown
+        - 'calmar_ratio': Calmar ratio
+        - 'current_weights': Final portfolio weights
+    """
+    from pypfopt import HRPOpt
+    
+    # Filter data from port_initial_date onwards
+    port_data = price_data.loc[port_initial_date:].copy()
+    
+    if len(port_data) < lookback_period + 1:
+        raise ValueError(f"Insufficient data. Need at least {lookback_period + 1} days from {port_initial_date}")
+    
+    # Initialize tracking variables
+    portfolio_values = []
+    weight_history = []
+    dates = []
+    initial_capital = 1000000
+    current_value = initial_capital
+    current_weights = np.ones(price_data.shape[1]) / price_data.shape[1]  # Equal initial weights
+    
+    # Calculate returns for Sharpe ratio computation
+    risk_free_rate = get_rf_rate(start_date=port_data.index[0].strftime('%Y-%m-%d'),
+                                  end_date=port_data.index[-1].strftime('%Y-%m-%d'))
+    
+    # Iterate through each day starting from lookback_period
+    for i in range(lookback_period, len(port_data)):
+        current_date = port_data.index[i]
+        lookback_data = port_data.iloc[i - lookback_period:i]
+        
+        # Calculate returns for the lookback period
+        returns = lookback_data.pct_change().dropna()
+        
+        if len(returns) < 2:
+            target_weights = current_weights.copy()
+        else:
+            try:
+                # Use HRPOpt to calculate optimal weights
+                hrp = HRPOpt(returns)
+                target_weights_dict = hrp.optimize()
+                
+                # Convert dictionary to array in correct column order
+                target_weights = np.array([target_weights_dict.get(col, 0) for col in price_data.columns])
+                
+                # Handle edge cases (all zeros or NaN)
+                if np.isnan(target_weights).any() or (target_weights == 0).all():
+                    target_weights = np.ones(len(price_data.columns)) / len(price_data.columns)
+                else:
+                    target_weights = target_weights / target_weights.sum()  # Normalize
+                    
+            except Exception as e:
+                print(f"HRP optimization failed on {current_date}: {e}. Using equal weights.")
+                target_weights = np.ones(len(price_data.columns)) / len(price_data.columns)
+        
+        # Calculate turnover (sum of absolute weight changes)
+        turnover = np.sum(np.abs(target_weights - current_weights))
+        
+        # Apply transaction costs
+        cost_deduction = turnover * transaction_cost
+        
+        # Get daily returns
+        daily_return = (port_data.iloc[i] / port_data.iloc[i-1] - 1).values
+        
+        # Calculate portfolio return
+        portfolio_return = np.dot(current_weights, daily_return)
+        
+        # Update portfolio value
+        current_value = current_value * (1 + portfolio_return) * (1 - cost_deduction)
+        
+        # Store results
+        portfolio_values.append(current_value)
+        weight_history.append(target_weights.copy())
+        dates.append(current_date)
+        
+        # Update weights for next iteration
+        current_weights = target_weights.copy()
+    
+    # Create results DataFrame
+    portfolio_df = pd.DataFrame({
+        'date': dates,
+        'portfolio_value': portfolio_values
+    })
+    
+    # Calculate performance metrics
+    portfolio_returns = np.diff(portfolio_values) / np.array(portfolio_values[:-1])
+    annualized_return = (portfolio_values[-1] / initial_capital) ** (252 / len(portfolio_values)) - 1
+    
+    # Sharpe ratio
+    excess_returns = portfolio_returns - (risk_free_rate / 252)
+    sharpe_ratio = np.sqrt(252) * np.mean(excess_returns) / (np.std(excess_returns) + 1e-8)
+    
+    # Maximum drawdown
+    cumulative_values = np.array(portfolio_values)
+    running_max = np.maximum.accumulate(cumulative_values)
+    drawdown = (cumulative_values - running_max) / running_max
+    max_drawdown = np.min(drawdown)
+    
+    # Calmar ratio
+    calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown != 0 else 0
+    
+    return {
+        'portfolio_values': pd.Series(portfolio_values, index=dates),
+        'annualized_return': annualized_return,
+        'sharpe_ratio': sharpe_ratio,
+        'max_drawdown': max_drawdown,
+        'calmar_ratio': calmar_ratio,
+        'current_weights': current_weights,
+        'portfolio_df': portfolio_df,
+        'weight_history': np.array(weight_history)
+    }
+
 def buy_and_hold(price_data, port_initial_date, initial_capital:float): 
     current_weights = np.array([1/len(price_data.columns)] * len(price_data.columns))       # initial weights is equal weights
     return_data = price_data.pct_change()                                                   # calculate daily returns
