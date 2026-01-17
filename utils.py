@@ -227,12 +227,22 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
         # Calculate returns for the lookback period
         returns = lookback_data.pct_change().dropna()
         
+        # Validate returns data
         if len(returns) < 2:
             target_weights = current_weights.copy()
+        elif returns.isna().any().any() or np.isinf(returns.values).any():
+            # Data contains NaN or inf values
+            target_weights = current_weights.copy()
+        elif (returns.std() == 0).any():
+            # Zero variance assets - use equal weights
+            target_weights = np.ones(len(price_data.columns)) / len(price_data.columns)
         else:
             try:
+                # Clean any remaining NaN/inf values
+                returns_clean = returns.fillna(0).replace([np.inf, -np.inf], 0)
+                
                 # Use HRPOpt to calculate optimal weights
-                hrp = HRPOpt(returns)
+                hrp = HRPOpt(returns_clean)
                 target_weights_dict = hrp.optimize()
                 
                 # Convert dictionary to array in correct column order
@@ -245,7 +255,7 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
                     target_weights = target_weights / target_weights.sum()  # Normalize
                     
             except Exception as e:
-                print(f"HRP optimization failed on {current_date}: {e}. Using equal weights.")
+                # Fall back to equal weights on any error
                 target_weights = np.ones(len(price_data.columns)) / len(price_data.columns)
         
         # Calculate turnover (sum of absolute weight changes)
