@@ -8,6 +8,7 @@ import torch as th
 from typing import Tuple
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.callbacks import BaseCallback
+import os
 
 def split_build_normalize_env(price_data:pd.DataFrame, port_initial_date:str, lookback_period:int):
     ''' Split, build, and normalize the environment '''
@@ -193,6 +194,7 @@ def conduct_rolling_robustness_test(model_class,
     
     all_results = []
     portfolio_values_all = {}
+    tracking_data_all = []  # NEW: Collect tracking data from test environments
     current_capital = initial_capital
     
     # Store hyperparameters for logging
@@ -262,6 +264,24 @@ def conduct_rolling_robustness_test(model_class,
             'portfolio_values': eval_results['portfolio_values'].tolist()
         }
         
+        # NEW: Collect tracking data from test environment
+        weights_df = pd.DataFrame(
+            test_env.weights_history,
+            columns=[f"{col}_weight" for col in price_data.columns]
+        )
+        weights_df['date'] = test_env.dates_history
+        
+        transaction_df = pd.DataFrame({
+            'date': test_env.dates_history,
+            'transaction_cost': test_env.transaction_costs_history
+        })
+        
+        tracking_data_all.append({
+            'iteration': iteration,
+            'weights_df': weights_df,
+            'transaction_df': transaction_df
+        })
+        
         # Print iteration summary
         print(f"Annualized Return: {eval_results['annualized_return']:.4f}")
         print(f"Sharpe Ratio: {eval_results['sharpe_ratio']:.4f}")
@@ -301,7 +321,8 @@ def conduct_rolling_robustness_test(model_class,
         'all_results': all_results,
         'summary_stats': summary_stats,
         'hyperparameters': hyperparameters,
-        'portfolio_values_all': portfolio_values_all
+        'portfolio_values_all': portfolio_values_all,
+        'tracking_data': tracking_data_all  # NEW: Tracking data per iteration
     }
 
 def export_rolling_results_to_csv(results: dict, output_filepath: str):
@@ -796,6 +817,31 @@ def conduct_multi_seed_rolling_test(model_class,
     
     # Calculate aggregate statistics
     mean_stats, std_stats = _compute_seed_statistics(all_seeds_results)
+    
+    # NEW: Export tracking data organized by seed and iteration
+    model_name = model_class.__name__
+    for seed in seeds:
+        seed_results = all_seeds_results[seed]
+        seed_tracking = seed_results.get('tracking_data', [])
+        
+        if seed_tracking:
+            seed_dir = os.path.join('tables', f'{model_name}_seed{seed}')
+            os.makedirs(seed_dir, exist_ok=True)
+            
+            for track in seed_tracking:
+                iter_num = track['iteration']
+                iter_dir = os.path.join(seed_dir, f'iteration_{iter_num:02d}')
+                os.makedirs(iter_dir, exist_ok=True)
+                
+                # Export weights
+                weights_path = os.path.join(iter_dir, 'daily_weights.csv')
+                track['weights_df'].to_csv(weights_path, index=False)
+                print(f"Exported: {weights_path}")
+                
+                # Export transaction costs
+                transaction_path = os.path.join(iter_dir, 'daily_transaction_costs.csv')
+                track['transaction_df'].to_csv(transaction_path, index=False)
+                print(f"Exported: {transaction_path}")
     
     return {
         'all_seeds_results': all_seeds_results,

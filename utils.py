@@ -240,8 +240,10 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
     current_weights = np.ones(price_data.shape[1]) / price_data.shape[1]  # Equal initial weights
     
     # Calculate returns for Sharpe ratio computation
-    risk_free_rate = get_rf_rate(start_date=port_data.index[0].strftime('%Y-%m-%d'),
-                                  end_date=port_data.index[-1].strftime('%Y-%m-%d'))
+    # risk_free_rate = get_rf_rate(start_date=port_data.index[0].strftime('%Y-%m-%d'),
+    #                               end_date=port_data.index[-1].strftime('%Y-%m-%d'))
+
+    risk_free_rate = get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')
     
     # Iterate through each day starting from lookback_period
     for i in range(lookback_period, len(port_data)):
