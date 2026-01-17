@@ -35,7 +35,13 @@ class PortfolioEnv(gym.Env):
         self.portfolio_value = self.initial_capital
         self.current_weights = np.ones(self.n_assets, dtype=np.float32) / self.n_assets
         self.portfolio_history = [self.initial_capital]
-        self.prev_portfolio_value = self.initial_capital        
+        self.prev_portfolio_value = self.initial_capital
+        
+        # Initialize tracking for weights and transaction costs
+        self.weights_history = [self.current_weights.copy()]
+        self.transaction_costs_history = [0.0]
+        self.dates_history = [self.dates[self.lookback_window] if self.lookback_window < len(self.dates) else self.dates[-1]]
+        
         obs = self.build_observation()
         # Ensure current_step is within bounds of dates index
         step_idx = min(self.current_step, len(self.dates) - 1)
@@ -242,6 +248,12 @@ class PortfolioEnv(gym.Env):
         self.portfolio_value = new_portfolio_value
         self.current_weights = target_weights.copy()
         self.portfolio_history.append(new_portfolio_value)
+        
+        # Track weights and transaction costs
+        self.weights_history.append(target_weights.copy())
+        self.transaction_costs_history.append(cost_deduction * self.prev_portfolio_value)  # Absolute cost in dollars
+        self.dates_history.append(self.dates[self.current_step])
+        
         self.current_step += 1
 
         terminated = self.current_step >= len(self.price_data) - 1

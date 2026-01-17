@@ -103,6 +103,11 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
     return_data = price_data.pct_change()
     # pandas Series for robust indexing
     portfolio_values = pd.Series(np.nan, index=price_data.index, dtype=float)
+    
+    # Track daily weights and transaction costs
+    weight_history = []
+    transaction_costs_history = []
+    dates_history = []
 
     initial_loc = date_index(price_data, port_initial_date)
     # set starting portfolio value at initial_loc
@@ -151,6 +156,11 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
                     prev_val = portfolio_values.loc[prev_valid_idx] if prev_valid_idx is not None else initial_capital
 
             portfolio_values.iloc[idx] = prev_val * (1 + portfolio_return)
+            
+            # Track weights and transaction costs
+            weight_history.append(current_weights.copy())
+            transaction_costs_history.append(turnover * transaction_cost * prev_val)  # Absolute cost in dollars
+            dates_history.append(price_data.index[idx])
 
     # drop leading NaNs (before initial_loc)
     portfolio_values = portfolio_values.dropna()
@@ -161,13 +171,26 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
     sharpe_ratio = (annualized_return - get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')) / volatility if volatility != 0 else 0
     max_drawdown = qs.stats.max_drawdown(portfolio_values)
 
+    # Create weights DataFrame
+    weights_df = pd.DataFrame(weight_history, columns=[f"{col}_weight" for col in price_data.columns])
+    weights_df['date'] = dates_history
+    weights_df = weights_df[['date'] + [f"{col}_weight" for col in price_data.columns]]
+    
+    # Create transaction costs DataFrame
+    transaction_df = pd.DataFrame({
+        'date': dates_history,
+        'transaction_cost': transaction_costs_history
+    })
+
     results = {
         'portfolio_values': portfolio_values,
         'annualized_return': annualized_return,
         'annualized_volatility': volatility,
         'sharpe_ratio': sharpe_ratio,
         'max_drawdown': max_drawdown,
-        'current_weights': current_weights
+        'current_weights': current_weights,
+        'weights_df': weights_df,
+        'transaction_df': transaction_df
     }
     return results
 
@@ -210,6 +233,7 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
     # Initialize tracking variables
     portfolio_values = []
     weight_history = []
+    transaction_costs_history = []
     dates = []
     initial_capital = 1000000
     current_value = initial_capital
@@ -276,6 +300,7 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
         # Store results
         portfolio_values.append(current_value)
         weight_history.append(target_weights.copy())
+        transaction_costs_history.append(turnover * transaction_cost * (current_value / (1 - cost_deduction)))  # Absolute cost in dollars
         dates.append(current_date)
         
         # Update weights for next iteration
@@ -304,6 +329,17 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
     # Calmar ratio
     calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown != 0 else 0
     
+    # Create weights DataFrame
+    weights_df = pd.DataFrame(weight_history, columns=[f"{col}_weight" for col in price_data.columns])
+    weights_df['date'] = dates
+    weights_df = weights_df[['date'] + [f"{col}_weight" for col in price_data.columns]]
+    
+    # Create transaction costs DataFrame
+    transaction_df = pd.DataFrame({
+        'date': dates,
+        'transaction_cost': transaction_costs_history
+    })
+    
     return {
         'portfolio_values': pd.Series(portfolio_values, index=dates),
         'annualized_return': annualized_return,
@@ -312,7 +348,9 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
         'calmar_ratio': calmar_ratio,
         'current_weights': current_weights,
         'portfolio_df': portfolio_df,
-        'weight_history': np.array(weight_history)
+        'weight_history': np.array(weight_history),
+        'weights_df': weights_df,
+        'transaction_df': transaction_df
     }
 
 def buy_and_hold(price_data, port_initial_date, initial_capital:float): 
@@ -482,6 +520,48 @@ def log_hpt_results(model_name, hyperparams, total_timesteps, eval_results):
     print(f"✓ Logged {model_name} results to {hpt_log_file}")
 
 print("✓ Hyperparameter tracking initialized!")
+
+def export_env_weights_and_costs(env, output_dir):
+    """
+    Export daily weights and transaction costs from a PortfolioEnv instance.
+    
+    Parameters:
+    -----------
+    env : PortfolioEnv
+        Environment instance with tracking data
+    output_dir : str
+        Directory to save CSV files
+    
+    Returns:
+    --------
+    tuple : (weights_df, transaction_df)
+    """
+    # Create weights DataFrame
+    weights_df = pd.DataFrame(
+        env.weights_history,
+        columns=[f"{col}_weight" for col in env.price_data.columns]
+    )
+    weights_df['date'] = env.dates_history
+    weights_df = weights_df[['date'] + [f"{col}_weight" for col in env.price_data.columns]]
+    
+    # Create transaction costs DataFrame
+    transaction_df = pd.DataFrame({
+        'date': env.dates_history,
+        'transaction_cost': env.transaction_costs_history
+    })
+    
+    # Export to CSV
+    os.makedirs(output_dir, exist_ok=True)
+    weights_path = os.path.join(output_dir, 'daily_weights.csv')
+    costs_path = os.path.join(output_dir, 'daily_transaction_costs.csv')
+    
+    weights_df.to_csv(weights_path, index=False)
+    transaction_df.to_csv(costs_path, index=False)
+    
+    print(f"✓ Exported daily weights to {weights_path}")
+    print(f"✓ Exported transaction costs to {costs_path}")
+    
+    return weights_df, transaction_df
 
 rf_data = pd.read_csv('tables/TB3MS.csv', index_col=0, parse_dates=True)
 rf_rate = rf_data['TB3MS'].mean()
