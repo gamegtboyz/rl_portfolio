@@ -104,9 +104,10 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
     # pandas Series for robust indexing
     portfolio_values = pd.Series(np.nan, index=price_data.index, dtype=float)
     
-    # Track daily weights and transaction costs
+    # Track daily weights, transaction costs, and turnover
     weight_history = []
     transaction_costs_history = []
+    turnover_history = []
     dates_history = []
 
     initial_loc = date_index(price_data, port_initial_date)
@@ -157,9 +158,10 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
 
             portfolio_values.iloc[idx] = prev_val * (1 + portfolio_return)
             
-            # Track weights and transaction costs
+            # Track weights, transaction costs, and daily turnover
             weight_history.append(current_weights.copy())
             transaction_costs_history.append(turnover * transaction_cost * prev_val)  # Absolute cost in dollars
+            turnover_history.append(turnover)  # Percentage turnover
             dates_history.append(price_data.index[idx])
 
     # drop leading NaNs (before initial_loc)
@@ -181,6 +183,12 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
         'date': dates_history,
         'transaction_cost': transaction_costs_history
     })
+    
+    # Create turnover DataFrame
+    turnover_df = pd.DataFrame({
+        'date': dates_history,
+        'turnover': turnover_history  # Daily turnover as percentage
+    })
 
     results = {
         'portfolio_values': portfolio_values,
@@ -190,7 +198,8 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
         'max_drawdown': max_drawdown,
         'current_weights': current_weights,
         'weights_df': weights_df,
-        'transaction_df': transaction_df
+        'transaction_df': transaction_df,
+        'turnover_df': turnover_df
     }
     return results
 
@@ -234,6 +243,7 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
     portfolio_values = []
     weight_history = []
     transaction_costs_history = []
+    turnover_history = []
     dates = []
     initial_capital = 1000000
     current_value = initial_capital
@@ -303,6 +313,7 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
         portfolio_values.append(current_value)
         weight_history.append(target_weights.copy())
         transaction_costs_history.append(turnover * transaction_cost * (current_value / (1 - cost_deduction)))  # Absolute cost in dollars
+        turnover_history.append(turnover)  # Daily turnover as percentage
         dates.append(current_date)
         
         # Update weights for next iteration
@@ -342,6 +353,12 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
         'transaction_cost': transaction_costs_history
     })
     
+    # Create turnover DataFrame
+    turnover_df = pd.DataFrame({
+        'date': dates,
+        'turnover': turnover_history  # Daily turnover as percentage
+    })
+    
     return {
         'portfolio_values': pd.Series(portfolio_values, index=dates),
         'annualized_return': annualized_return,
@@ -352,7 +369,8 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
         'portfolio_df': portfolio_df,
         'weight_history': np.array(weight_history),
         'weights_df': weights_df,
-        'transaction_df': transaction_df
+        'transaction_df': transaction_df,
+        'turnover_df': turnover_df
     }
 
 def buy_and_hold(price_data, port_initial_date, initial_capital:float): 

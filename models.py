@@ -265,21 +265,31 @@ def conduct_rolling_robustness_test(model_class,
         }
         
         # NEW: Collect tracking data from test environment
+        # Access the unwrapped environment to get custom attributes
+        unwrapped_env = test_env.venv.envs[0]  # Get first env from DummyVecEnv
+
         weights_df = pd.DataFrame(
-            test_env.weights_history,
+            unwrapped_env.weights_history,
             columns=[f"{col}_weight" for col in price_data.columns]
         )
-        weights_df['date'] = test_env.dates_history
-        
+        weights_df['date'] = unwrapped_env.dates_history
+
         transaction_df = pd.DataFrame({
-            'date': test_env.dates_history,
-            'transaction_cost': test_env.transaction_costs_history
+            'date': unwrapped_env.dates_history,
+            'transaction_cost': unwrapped_env.transaction_costs_history
+        })
+        
+        # NEW: Add turnover tracking
+        turnover_df = pd.DataFrame({
+            'date': unwrapped_env.dates_history,
+            'turnover': unwrapped_env.turnover_history
         })
         
         tracking_data_all.append({
             'iteration': iteration,
             'weights_df': weights_df,
-            'transaction_df': transaction_df
+            'transaction_df': transaction_df,
+            'turnover_df': turnover_df
         })
         
         # Print iteration summary
@@ -842,6 +852,11 @@ def conduct_multi_seed_rolling_test(model_class,
                 transaction_path = os.path.join(iter_dir, 'daily_transaction_costs.csv')
                 track['transaction_df'].to_csv(transaction_path, index=False)
                 print(f"Exported: {transaction_path}")
+                
+                # NEW: Export turnover
+                turnover_path = os.path.join(iter_dir, 'daily_turnover.csv')
+                track['turnover_df'].to_csv(turnover_path, index=False)
+                print(f"Exported: {turnover_path}")
     
     return {
         'all_seeds_results': all_seeds_results,

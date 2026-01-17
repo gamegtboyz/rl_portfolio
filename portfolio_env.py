@@ -37,9 +37,10 @@ class PortfolioEnv(gym.Env):
         self.portfolio_history = [self.initial_capital]
         self.prev_portfolio_value = self.initial_capital
         
-        # Initialize tracking for weights and transaction costs
+        # Initialize tracking for weights, transaction costs, and daily turnover
         self.weights_history = [self.current_weights.copy()]
         self.transaction_costs_history = [0.0]
+        self.turnover_history = [0.0]
         self.dates_history = [self.dates[self.lookback_window] if self.lookback_window < len(self.dates) else self.dates[-1]]
         
         obs = self.build_observation()
@@ -249,9 +250,10 @@ class PortfolioEnv(gym.Env):
         self.current_weights = target_weights.copy()
         self.portfolio_history.append(new_portfolio_value)
         
-        # Track weights and transaction costs
+        # Track weights, transaction costs, and daily turnover
         self.weights_history.append(target_weights.copy())
         self.transaction_costs_history.append(cost_deduction * self.prev_portfolio_value)  # Absolute cost in dollars
+        self.turnover_history.append(turnover)  # Daily turnover as percentage
         self.dates_history.append(self.dates[self.current_step])
         
         self.current_step += 1
