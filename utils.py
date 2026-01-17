@@ -163,10 +163,10 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
 
     results = {
         'portfolio_values': portfolio_values,
-        'annualized_return': f"{annualized_return:.2%}",
-        'annualized_volatility': f"{volatility:.2%}",
-        'sharpe_ratio': f"{sharpe_ratio:.2f}",
-        'max_drawdown': f"{max_drawdown:.2%}",
+        'annualized_return': annualized_return,
+        'annualized_volatility': volatility,
+        'sharpe_ratio': sharpe_ratio,
+        'max_drawdown': max_drawdown,
         'current_weights': current_weights
     }
     return results
@@ -329,9 +329,9 @@ def buy_and_hold(price_data, port_initial_date, initial_capital:float):
 
     results = {
         'portfolio_values': portfolio_values,
-        'annualized_return': f"{annualized_return:.2%}",
-        'annualized_volatility': f"{volatility:.2%}",
-        'sharpe_ratio': f"{sharpe_ratio:.2f}",
+        'annualized_return': annualized_return,
+        'annualized_volatility': volatility,
+        'sharpe_ratio': sharpe_ratio,
         'max_drawdown': max_drawdown,
         'current_weights': current_weights
     }
