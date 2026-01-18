@@ -211,7 +211,7 @@ class PortfolioEnv(gym.Env):
         
         # 2. Turnover penalty
         turnover_penalty = turnover 
-        reward -= turnover_penalty * 1.0  # Simple 1:1 penalty
+        reward -= turnover_penalty * 0.05
         
         # 3. Volatility penalty (based on recent portfolio returns)
         if len(self.portfolio_history) >= 20:
