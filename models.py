@@ -258,26 +258,17 @@ def conduct_rolling_robustness_test(model_class,
         
         all_results.append(iteration_results)
         
-        # Store portfolio values separately for aggregation
+        # Get the unwrapped environment for accessing tracking data
+        unwrapped_env = test_env.venv.envs[0]  # Get first env from DummyVecEnv
+        
+        # Store portfolio values and tracking data separately for aggregation
         portfolio_values_all[iteration] = {
             'dates': eval_results['portfolio_df']['date'].tolist(),
-            'portfolio_values': eval_results['portfolio_values'].tolist()
+            'portfolio_values': eval_results['portfolio_values'].tolist(),
+            'weights': np.array(unwrapped_env.weights_history),
+            'turnover': np.array(unwrapped_env.turnover_history),
+            'transaction_costs': np.array(unwrapped_env.transaction_costs_history)
         }
-        
-        # NEW: Collect tracking data from test environment
-        # Access the unwrapped environment to get custom attributes
-        unwrapped_env = test_env.venv.envs[0]  # Get first env from DummyVecEnv
-
-        weights_df = pd.DataFrame(
-            unwrapped_env.weights_history,
-            columns=[f"{col}_weight" for col in price_data.columns]
-        )
-        weights_df['date'] = unwrapped_env.dates_history
-
-        transaction_df = pd.DataFrame({
-            'date': unwrapped_env.dates_history,
-            'transaction_cost': unwrapped_env.transaction_costs_history
-        })
         
         # NEW: Add turnover tracking
         turnover_df = pd.DataFrame({
@@ -425,6 +416,144 @@ def export_portfolio_values_to_csv(results: dict, output_filepath: str):
     # Save to CSV
     df.to_csv(output_filepath, index=False)
     print(f"Portfolio values from all iterations exported to {output_filepath}")
+    
+    return df
+
+def export_weights_to_csv(results: dict, output_filepath: str):
+    """
+    Export daily portfolio weights from all iterations to CSV.
+    Each weight entry is stored with iteration metadata and asset columns.
+    
+    Args:
+        results (dict): Output from conduct_rolling_robustness_test()
+        output_filepath (str): Path to save weights CSV
+    """
+    all_weights_data = []
+    
+    # Iterate through all iterations and their tracking data
+    for iteration, tracking_data in results.get('portfolio_values_all', {}).items():
+        if 'weights' not in tracking_data:
+            continue
+            
+        dates = tracking_data.get('dates', [])
+        weights_array = tracking_data.get('weights', [])
+        
+        # Get iteration metadata from all_results
+        iter_metadata = results['all_results'][iteration]
+        
+        # Get asset names - infer from shape of weights
+        n_assets = weights_array.shape[1] if len(weights_array) > 0 else 0
+        asset_names = [f'asset_{i}' for i in range(n_assets)]
+        
+        # Create rows for each date/weight combination
+        for date, weights in zip(dates, weights_array):
+            row = {
+                'iteration': iteration,
+                'train_start_date': iter_metadata['train_start_date'],
+                'train_end_date': iter_metadata['train_end_date'],
+                'test_start_date': iter_metadata['test_start_date'],
+                'test_end_date': iter_metadata['test_end_date'],
+                'date': date,
+            }
+            # Add individual asset weights
+            for asset_name, weight in zip(asset_names, weights):
+                row[asset_name] = weight
+            all_weights_data.append(row)
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(all_weights_data)
+    
+    # Save to CSV
+    df.to_csv(output_filepath, index=False)
+    print(f"Daily weights from all iterations exported to {output_filepath}")
+    
+    return df
+
+def export_turnover_to_csv(results: dict, output_filepath: str):
+    """
+    Export daily turnover from all iterations to CSV.
+    Each turnover entry is stored with iteration metadata.
+    
+    Args:
+        results (dict): Output from conduct_rolling_robustness_test()
+        output_filepath (str): Path to save turnover CSV
+    """
+    all_turnover_data = []
+    
+    # Iterate through all iterations and their portfolio values
+    for iteration, pv_data in results.get('portfolio_values_all', {}).items():
+        if 'turnover' not in pv_data:
+            continue
+            
+        dates = pv_data.get('dates', [])
+        turnover_array = pv_data.get('turnover', [])
+        
+        # Get iteration metadata from all_results
+        iter_metadata = results['all_results'][iteration]
+        
+        # Create rows for each date/turnover pair
+        for date, turnover in zip(dates, turnover_array):
+            row = {
+                'iteration': iteration,
+                'train_start_date': iter_metadata['train_start_date'],
+                'train_end_date': iter_metadata['train_end_date'],
+                'test_start_date': iter_metadata['test_start_date'],
+                'test_end_date': iter_metadata['test_end_date'],
+                'date': date,
+                'turnover': turnover
+            }
+            all_turnover_data.append(row)
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(all_turnover_data)
+    
+    # Save to CSV
+    df.to_csv(output_filepath, index=False)
+    print(f"Daily turnover from all iterations exported to {output_filepath}")
+    
+    return df
+
+def export_transaction_costs_to_csv(results: dict, output_filepath: str):
+    """
+    Export daily transaction costs from all iterations to CSV.
+    Each transaction cost entry is stored with iteration metadata.
+    
+    Args:
+        results (dict): Output from conduct_rolling_robustness_test()
+        output_filepath (str): Path to save transaction costs CSV
+    """
+    all_costs_data = []
+    
+    # Iterate through all iterations and their portfolio values
+    for iteration, pv_data in results.get('portfolio_values_all', {}).items():
+        if 'transaction_costs' not in pv_data:
+            continue
+            
+        dates = pv_data.get('dates', [])
+        costs_array = pv_data.get('transaction_costs', [])
+        
+        # Get iteration metadata from all_results
+        iter_metadata = results['all_results'][iteration]
+        
+        # Create rows for each date/cost pair
+        for date, cost in zip(dates, costs_array):
+            row = {
+                'iteration': iteration,
+                'train_start_date': iter_metadata['train_start_date'],
+                'train_end_date': iter_metadata['train_end_date'],
+                'test_start_date': iter_metadata['test_start_date'],
+                'test_end_date': iter_metadata['test_end_date'],
+                'date': date,
+                'transaction_cost': cost
+            }
+            all_costs_data.append(row)
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(all_costs_data)
+    
+    # Save to CSV
+    df.to_csv(output_filepath, index=False)
+    print(f"Daily transaction costs from all iterations exported to {output_filepath}")
     
     return df
 
@@ -998,6 +1127,11 @@ def export_multi_seed_results_to_csv(multi_seed_results: dict, output_dir: str):
         export_rolling_results_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_results.csv'))
         export_hyperparameters_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_hyperparams.csv'))
         export_portfolio_values_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_portfolio.csv'))
+        
+        # NEW: Export weights, turnover, and transaction costs with full metadata
+        export_weights_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_weights.csv'))
+        export_turnover_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_turnover.csv'))
+        export_transaction_costs_to_csv(results, os.path.join(output_dir, f'{model_name}_seed_{seed}_transaction_costs.csv'))
 
 def export_multi_seed_hyperparameters_to_csv(multi_seed_results: dict, output_filepath: str):
     """
