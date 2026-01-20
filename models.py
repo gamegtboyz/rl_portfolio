@@ -237,11 +237,24 @@ def conduct_rolling_robustness_test(model_class,
         model = model_class('MlpPolicy', train_env, **model_kwargs)
         model.learn(total_timesteps=total_timesteps)
         
-        # Evaluate on test set
-        eval_results = evaluate_model_sb3(model, test_env, num_episodes=eval_episodes)
+        # Prepare cumulative adjustment if not first iteration
+        cumulative_adjustment = None
+        if iteration > 0:
+            # Carry forward the final value from previous iteration
+            cumulative_adjustment = {
+                'prev_final_value': current_capital,
+                'current_initial_value': iteration_start_capital
+            }
         
-        # Get final portfolio value for next iteration
-        final_portfolio_value = eval_results['portfolio_values'][-1]
+        # Evaluate on test set with cumulative adjustment
+        eval_results = evaluate_model_sb3(
+            model, test_env, 
+            num_episodes=eval_episodes,
+            cumulative_adjustment=cumulative_adjustment
+        )
+        
+        # Get final portfolio value for next iteration (from cumulative-adjusted values)
+        final_portfolio_value = eval_results.get('final_portfolio_value', eval_results['portfolio_values'][-1])
         current_capital = final_portfolio_value
         
         # Store results with metadata
@@ -274,6 +287,18 @@ def conduct_rolling_robustness_test(model_class,
         turnover_df = pd.DataFrame({
             'date': unwrapped_env.dates_history,
             'turnover': unwrapped_env.turnover_history
+        })
+        
+        # Create weights DataFrame (one column per asset)
+        weights_array = np.array(unwrapped_env.weights_history)
+        asset_columns = [f'Asset_{i}' for i in range(weights_array.shape[1])]
+        weights_df = pd.DataFrame(weights_array, columns=asset_columns)
+        weights_df.insert(0, 'date', unwrapped_env.dates_history)
+        
+        # Create transaction costs DataFrame
+        transaction_df = pd.DataFrame({
+            'date': unwrapped_env.dates_history,
+            'transaction_cost': unwrapped_env.transaction_costs_history
         })
         
         tracking_data_all.append({
@@ -557,24 +582,30 @@ def export_transaction_costs_to_csv(results: dict, output_filepath: str):
     
     return df
 
-def evaluate_model_sb3(model, env, num_episodes=10):
+def evaluate_model_sb3(model, env, num_episodes=10, cumulative_adjustment=None):
     """
     Clean redesign: Evaluate a Stable Baselines3 model on the environment.
+    Supports cumulative portfolio value tracking across rolling windows.
     
     Args:
         model: Loaded SB3 model (A2C, PPO, DDPG, SAC)
         env: VecNormalize wrapped environment
         num_episodes (int): Number of evaluation episodes
+        cumulative_adjustment (dict, optional): Dict with keys:
+            - 'prev_final_value' (float): Final portfolio value from previous iteration
+            - 'current_initial_value' (float): Initial capital for current iteration
+            Enables cumulative tracking across rolling windows
     
     Returns:
         dict with metrics from LAST episode:
-            - annualized_return (float)
+            - annualized_return (float): Return calculated on cumulative-adjusted values
             - annualized_volatility (float)
             - sharpe_ratio (float, risk-free rate ~ 1.2%)
             - max_drawdown (float)
             - sortino_ratio (float)
-            - portfolio_values (np.ndarray): Array of portfolio values
+            - portfolio_values (np.ndarray): Array of portfolio values (cumulative-adjusted)
             - avg_weights (np.ndarray): Average weights across assets
+            - final_portfolio_value (float): Final value for next iteration
     """
     episodes_data = []
     
@@ -601,6 +632,20 @@ def evaluate_model_sb3(model, env, num_episodes=10):
         # Convert to arrays
         portfolio_values = np.array(portfolio_values)
         weights_array = np.array(weights_list)
+        
+        # CUMULATIVE ADJUSTMENT: Adjust portfolio values if carrying forward from previous iteration
+        cumulative_offset = 0
+        calculation_initial_capital = initial_capital  # For metric calculation
+        
+        if cumulative_adjustment is not None:
+            prev_final = cumulative_adjustment.get('prev_final_value')
+            curr_initial = cumulative_adjustment.get('current_initial_value')
+            
+            if prev_final is not None and curr_initial is not None:
+                # Calculate offset to make current iteration start where previous ended
+                cumulative_offset = prev_final - curr_initial
+                portfolio_values = portfolio_values + cumulative_offset
+                calculation_initial_capital = prev_final  # Metrics based on cumulative values
 
         # build portfolio values dataframe
         portfolio_df = pd.DataFrame({
@@ -613,8 +658,8 @@ def evaluate_model_sb3(model, env, num_episodes=10):
         # Daily returns from portfolio values
         daily_returns = np.diff(portfolio_values) / portfolio_values[:-1]
         
-        # Total return over period
-        total_return = (portfolio_values[-1] - initial_capital) / initial_capital
+        # Total return over period (calculated from cumulative-adjusted values)
+        total_return = (portfolio_values[-1] - calculation_initial_capital) / calculation_initial_capital
         n_days = len(daily_returns)
         
         # Annualized return (convert from daily to annual)
@@ -671,6 +716,7 @@ def evaluate_model_sb3(model, env, num_episodes=10):
     
     # Use last episode's portfolio values for reference
     last = episodes_data[-1]
+    final_portfolio_value = last['portfolio_values'][-1]
     
     return {
         'annualized_return': avg_return,
@@ -680,7 +726,8 @@ def evaluate_model_sb3(model, env, num_episodes=10):
         'sortino_ratio': avg_sortino,
         'portfolio_values': last['portfolio_values'],
         'avg_weights': avg_weights,
-        'portfolio_df': last['portfolio_df']
+        'portfolio_df': last['portfolio_df'],
+        'final_portfolio_value': final_portfolio_value  # For carrying to next iteration
     }
 
 class LoggerCallback(BaseCallback):
