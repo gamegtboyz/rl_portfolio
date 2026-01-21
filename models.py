@@ -283,23 +283,27 @@ def conduct_rolling_robustness_test(model_class,
             'transaction_costs': np.array(unwrapped_env.transaction_costs_history)
         }
         
-        # NEW: Add turnover tracking
-        turnover_df = pd.DataFrame({
-            'date': unwrapped_env.dates_history,
-            'turnover': unwrapped_env.turnover_history
-        })
+        # Get daily dataframes from eval_results (now have full daily data)
+        weights_df = eval_results['weights_df'].copy()
+        weights_df['iteration'] = iteration
+        weights_df['train_start_date'] = split_data['train_start_date']
+        weights_df['train_end_date'] = split_data['train_end_date']
+        weights_df['test_start_date'] = split_data['test_start_date']
+        weights_df['test_end_date'] = split_data['test_end_date']
         
-        # Create weights DataFrame (one column per asset)
-        weights_array = np.array(unwrapped_env.weights_history)
-        asset_columns = [f'Asset_{i}' for i in range(weights_array.shape[1])]
-        weights_df = pd.DataFrame(weights_array, columns=asset_columns)
-        weights_df.insert(0, 'date', unwrapped_env.dates_history)
+        transaction_df = eval_results['transaction_df'].copy()
+        transaction_df['iteration'] = iteration
+        transaction_df['train_start_date'] = split_data['train_start_date']
+        transaction_df['train_end_date'] = split_data['train_end_date']
+        transaction_df['test_start_date'] = split_data['test_start_date']
+        transaction_df['test_end_date'] = split_data['test_end_date']
         
-        # Create transaction costs DataFrame
-        transaction_df = pd.DataFrame({
-            'date': unwrapped_env.dates_history,
-            'transaction_cost': unwrapped_env.transaction_costs_history
-        })
+        turnover_df = eval_results['turnover_df'].copy()
+        turnover_df['iteration'] = iteration
+        turnover_df['train_start_date'] = split_data['train_start_date']
+        turnover_df['train_end_date'] = split_data['train_end_date']
+        turnover_df['test_start_date'] = split_data['test_start_date']
+        turnover_df['test_end_date'] = split_data['test_end_date']
         
         tracking_data_all.append({
             'iteration': iteration,
@@ -453,40 +457,19 @@ def export_weights_to_csv(results: dict, output_filepath: str):
         results (dict): Output from conduct_rolling_robustness_test()
         output_filepath (str): Path to save weights CSV
     """
-    all_weights_data = []
+    all_weights_dfs = []
     
-    # Iterate through all iterations and their tracking data
-    for iteration, tracking_data in results.get('portfolio_values_all', {}).items():
-        if 'weights' not in tracking_data:
-            continue
-            
-        dates = tracking_data.get('dates', [])
-        weights_array = tracking_data.get('weights', [])
-        
-        # Get iteration metadata from all_results
-        iter_metadata = results['all_results'][iteration]
-        
-        # Get asset names - infer from shape of weights
-        n_assets = weights_array.shape[1] if len(weights_array) > 0 else 0
-        asset_names = [f'asset_{i}' for i in range(n_assets)]
-        
-        # Create rows for each date/weight combination
-        for date, weights in zip(dates, weights_array):
-            row = {
-                'iteration': iteration,
-                'train_start_date': iter_metadata['train_start_date'],
-                'train_end_date': iter_metadata['train_end_date'],
-                'test_start_date': iter_metadata['test_start_date'],
-                'test_end_date': iter_metadata['test_end_date'],
-                'date': date,
-            }
-            # Add individual asset weights
-            for asset_name, weight in zip(asset_names, weights):
-                row[asset_name] = weight
-            all_weights_data.append(row)
+    # Iterate through tracking data from each iteration
+    for tracking_data in results.get('tracking_data', []):
+        weights_df = tracking_data.get('weights_df')
+        if weights_df is not None:
+            all_weights_dfs.append(weights_df)
     
-    # Convert to DataFrame
-    df = pd.DataFrame(all_weights_data)
+    # Concatenate all iterations into single dataframe
+    if all_weights_dfs:
+        df = pd.concat(all_weights_dfs, ignore_index=True)
+    else:
+        df = pd.DataFrame()
     
     # Save to CSV
     df.to_csv(output_filepath, index=False)
@@ -503,34 +486,19 @@ def export_turnover_to_csv(results: dict, output_filepath: str):
         results (dict): Output from conduct_rolling_robustness_test()
         output_filepath (str): Path to save turnover CSV
     """
-    all_turnover_data = []
+    all_turnover_dfs = []
     
-    # Iterate through all iterations and their portfolio values
-    for iteration, pv_data in results.get('portfolio_values_all', {}).items():
-        if 'turnover' not in pv_data:
-            continue
-            
-        dates = pv_data.get('dates', [])
-        turnover_array = pv_data.get('turnover', [])
-        
-        # Get iteration metadata from all_results
-        iter_metadata = results['all_results'][iteration]
-        
-        # Create rows for each date/turnover pair
-        for date, turnover in zip(dates, turnover_array):
-            row = {
-                'iteration': iteration,
-                'train_start_date': iter_metadata['train_start_date'],
-                'train_end_date': iter_metadata['train_end_date'],
-                'test_start_date': iter_metadata['test_start_date'],
-                'test_end_date': iter_metadata['test_end_date'],
-                'date': date,
-                'turnover': turnover
-            }
-            all_turnover_data.append(row)
+    # Iterate through tracking data from each iteration
+    for tracking_data in results.get('tracking_data', []):
+        turnover_df = tracking_data.get('turnover_df')
+        if turnover_df is not None:
+            all_turnover_dfs.append(turnover_df)
     
-    # Convert to DataFrame
-    df = pd.DataFrame(all_turnover_data)
+    # Concatenate all iterations into single dataframe
+    if all_turnover_dfs:
+        df = pd.concat(all_turnover_dfs, ignore_index=True)
+    else:
+        df = pd.DataFrame()
     
     # Save to CSV
     df.to_csv(output_filepath, index=False)
@@ -547,34 +515,19 @@ def export_transaction_costs_to_csv(results: dict, output_filepath: str):
         results (dict): Output from conduct_rolling_robustness_test()
         output_filepath (str): Path to save transaction costs CSV
     """
-    all_costs_data = []
+    all_costs_dfs = []
     
-    # Iterate through all iterations and their portfolio values
-    for iteration, pv_data in results.get('portfolio_values_all', {}).items():
-        if 'transaction_costs' not in pv_data:
-            continue
-            
-        dates = pv_data.get('dates', [])
-        costs_array = pv_data.get('transaction_costs', [])
-        
-        # Get iteration metadata from all_results
-        iter_metadata = results['all_results'][iteration]
-        
-        # Create rows for each date/cost pair
-        for date, cost in zip(dates, costs_array):
-            row = {
-                'iteration': iteration,
-                'train_start_date': iter_metadata['train_start_date'],
-                'train_end_date': iter_metadata['train_end_date'],
-                'test_start_date': iter_metadata['test_start_date'],
-                'test_end_date': iter_metadata['test_end_date'],
-                'date': date,
-                'transaction_cost': cost
-            }
-            all_costs_data.append(row)
+    # Iterate through tracking data from each iteration
+    for tracking_data in results.get('tracking_data', []):
+        transaction_df = tracking_data.get('transaction_df')
+        if transaction_df is not None:
+            all_costs_dfs.append(transaction_df)
     
-    # Convert to DataFrame
-    df = pd.DataFrame(all_costs_data)
+    # Concatenate all iterations into single dataframe
+    if all_costs_dfs:
+        df = pd.concat(all_costs_dfs, ignore_index=True)
+    else:
+        df = pd.DataFrame()
     
     # Save to CSV
     df.to_csv(output_filepath, index=False)
@@ -617,6 +570,8 @@ def evaluate_model_sb3(model, env, num_episodes=10, cumulative_adjustment=None):
         portfolio_values = []
         weights_list = []
         dates = []
+        transaction_costs = []
+        turnover = []
         initial_capital = 1000000
         
         # ===== COLLECT DATA DURING EPISODE =====
@@ -628,6 +583,8 @@ def evaluate_model_sb3(model, env, num_episodes=10, cumulative_adjustment=None):
             dates.append(info[0]['date'])
             portfolio_values.append(info[0]['portfolio_value'])
             weights_list.append(info[0]['weights'].copy())
+            transaction_costs.append(info[0].get('transaction_cost', 0.0))
+            turnover.append(info[0].get('turnover', 0.0))
         
         # Convert to arrays
         portfolio_values = np.array(portfolio_values)
@@ -651,6 +608,24 @@ def evaluate_model_sb3(model, env, num_episodes=10, cumulative_adjustment=None):
         portfolio_df = pd.DataFrame({
             'date': dates,
             'portfolio_value': portfolio_values
+        })
+        
+        # build weights dataframe
+        n_assets = weights_array.shape[1]
+        asset_columns = [f'asset_{i}' for i in range(n_assets)]
+        weights_df = pd.DataFrame(weights_array, columns=asset_columns)
+        weights_df.insert(0, 'date', dates)
+        
+        # build transaction costs dataframe
+        transaction_df = pd.DataFrame({
+            'date': dates,
+            'transaction_cost': transaction_costs
+        })
+        
+        # build turnover dataframe
+        turnover_df = pd.DataFrame({
+            'date': dates,
+            'turnover': turnover
         })
         
         # ===== CALCULATE METRICS =====
@@ -703,7 +678,10 @@ def evaluate_model_sb3(model, env, num_episodes=10, cumulative_adjustment=None):
             'max_drawdown': max_drawdown,
             'sortino_ratio': sortino_ratio,
             'avg_weights': avg_weights,
-            'portfolio_df': portfolio_df
+            'portfolio_df': portfolio_df,
+            'weights_df': weights_df,
+            'transaction_df': transaction_df,
+            'turnover_df': turnover_df
         })
     
     # ===== COMPUTE AVERAGES ACROSS ALL EPISODES =====
@@ -727,6 +705,9 @@ def evaluate_model_sb3(model, env, num_episodes=10, cumulative_adjustment=None):
         'portfolio_values': last['portfolio_values'],
         'avg_weights': avg_weights,
         'portfolio_df': last['portfolio_df'],
+        'weights_df': last['weights_df'],
+        'transaction_df': last['transaction_df'],
+        'turnover_df': last['turnover_df'],
         'final_portfolio_value': final_portfolio_value  # For carrying to next iteration
     }
 

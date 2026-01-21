@@ -234,7 +234,7 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
     from pypfopt import HRPOpt
     
     # Filter data from port_initial_date onwards
-    port_data = price_data.loc[port_initial_date:].copy()
+    port_data = price_data.iloc[max(0,date_index(price_data, port_initial_date) - lookback_period):].copy()
     
     if len(port_data) < lookback_period + 1:
         raise ValueError(f"Insufficient data. Need at least {lookback_period + 1} days from {port_initial_date}")

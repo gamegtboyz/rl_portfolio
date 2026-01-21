@@ -265,6 +265,7 @@ class PortfolioEnv(gym.Env):
             "date": self.dates[self.current_step] if not terminated else self.dates[-1],
             "portfolio_value": float(self.portfolio_value),
             "weights": self.current_weights,
-            "turnover": turnover
+            "turnover": turnover,
+            "transaction_cost": cost_deduction * self.prev_portfolio_value
         }
         return (obs, reward, terminated, truncated, info)
