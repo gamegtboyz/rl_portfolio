@@ -583,5 +583,69 @@ def export_env_weights_and_costs(env, output_dir):
     
     return weights_df, transaction_df
 
+
+def calculate_diversification_ratio(weights_df: pd.DataFrame, asset_weight_cols: list = None) -> pd.DataFrame:
+    """
+    Calculate the daily diversification ratio for asset weights.
+    
+    The diversification ratio measures how spread out the portfolio weights are across assets.
+    Formula: DR = Sum of |weights| / sqrt(Sum of weights²)
+    
+    Range:
+    - DR = 1: Fully concentrated (all weight in one asset)
+    - DR = sqrt(n_assets): Fully diversified (equal weight across all assets)
+    
+    Parameters:
+    -----------
+    weights_df : pd.DataFrame
+        DataFrame containing asset weights with date column.
+        Can have weights in columns like 'asset_0', 'asset_1', ... or 'SPY', 'TLT', 'GLD', 'FXY'
+        or formats like 'SPY_weight', 'TLT_weight', etc.
+    
+    asset_weight_cols : list, optional
+        List of column names containing asset weights.
+        If None, automatically detects weight columns (excludes 'date' and mean/sd columns).
+    
+    Returns:
+    --------
+    pd.DataFrame
+        Input DataFrame with added 'diversification_ratio' column.
+    
+    Example:
+    --------
+    >>> weights_df = pd.read_csv('hrp_daily_weights.csv')
+    >>> result = calculate_diversification_ratio(weights_df)
+    >>> print(result[['date', 'diversification_ratio']].head())
+    """
+    df = weights_df.copy()
+    
+    # Auto-detect asset weight columns if not provided
+    if asset_weight_cols is None:
+        # Exclude 'date' column and columns with 'mean', 'sd', 'mean' in name
+        exclude_patterns = ['date', 'mean', 'sd', '_ratio']
+        asset_weight_cols = [col for col in df.columns 
+                            if not any(pattern in col.lower() for pattern in exclude_patterns)]
+    
+    # Calculate diversification ratio for each row
+    def calc_dr(row):
+        weights = row[asset_weight_cols].values
+        # Handle edge cases: empty weights or all zeros
+        if len(weights) == 0 or np.sum(np.abs(weights)) == 0:
+            return np.nan
+        
+        # DR = Sum of |weights| / sqrt(Sum of weights²)
+        numerator = np.sum(np.abs(weights))
+        denominator = np.sqrt(np.sum(weights ** 2))
+        
+        if denominator == 0:
+            return np.nan
+        
+        return (numerator / denominator) - 1
+    
+    df['diversification_score'] = df.apply(calc_dr, axis=1)
+    
+    return df
+
+
 rf_data = pd.read_csv('tables/TB3MS.csv', index_col=0, parse_dates=True)
 rf_rate = rf_data['TB3MS'].mean()
