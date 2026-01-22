@@ -1,4 +1,4 @@
-portfolio_values,annualized_return,sharpe_ratio,max_drawdown,calmar_ratio
+portfolio_values,annualized_return,sharpe_ratio,sortino_ratio,max_drawdown,calmar_ratio
 "2019-01-03    1.001767e+06
 2019-01-04    9.938815e+05
 2019-01-07    9.929499e+05
@@ -10,4 +10,4 @@ portfolio_values,annualized_return,sharpe_ratio,max_drawdown,calmar_ratio
 2024-12-26    9.331021e+05
 2024-12-27    9.280106e+05
 2024-12-30    9.285123e+05
-Length: 1508, dtype: float64",-0.012318229206847331,-0.4124250897652479,-0.312349811795273,-0.03943728711103309
+Length: 1508, dtype: float64",-0.012318229206847331,-0.4124250897652479,-0.6472316295296799,-0.312349811795273,-0.03943728711103309
