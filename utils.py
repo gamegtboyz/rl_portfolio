@@ -348,6 +348,9 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
     portfolio_returns = np.diff(portfolio_values) / np.array(portfolio_values[:-1])
     annualized_return = (portfolio_values[-1] / initial_capital) ** (252 / len(portfolio_values)) - 1
     
+    # Annualized volatility
+    annualized_volatility = np.std(portfolio_returns) * np.sqrt(252)
+    
     # Sharpe ratio
     excess_returns = portfolio_returns - (risk_free_rate / 252)
     sharpe_ratio = np.sqrt(252) * np.mean(excess_returns) / (np.std(excess_returns) + 1e-8)
@@ -390,6 +393,7 @@ def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, tra
     return {
         'portfolio_values': pd.Series(portfolio_values, index=dates),
         'annualized_return': annualized_return,
+        'annualized_volatility': annualized_volatility,
         'sharpe_ratio': sharpe_ratio,
         'sortino_ratio': sortino_ratio,
         'max_drawdown': max_drawdown,
@@ -420,8 +424,26 @@ def buy_and_hold(price_data, port_initial_date, initial_capital:float):
     # calculate portfolio performance metrics
     cumulative_return = (portfolio_values.iloc[-1]/initial_capital) - 1
     annualized_return = ((cumulative_return+1)**(1/(len(portfolio_values)/252))) - 1
-    volatility = portfolio_values.pct_change().std() * np.sqrt(252)
-    sharpe_ratio = (annualized_return - get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')) / volatility if volatility != 0 else 0
+    
+    # Calculate daily returns for volatility and Sortino ratio
+    daily_returns = portfolio_values.pct_change().dropna()
+    volatility = daily_returns.std() * np.sqrt(252)
+    
+    # Risk-free rate
+    rf_rate = get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')
+    
+    # Sharpe ratio
+    sharpe_ratio = (annualized_return - rf_rate) / volatility if volatility != 0 else 0
+    
+    # Sortino ratio (downside deviation)
+    negative_returns = daily_returns[daily_returns < 0]
+    if len(negative_returns) > 0:
+        downside_volatility = np.std(negative_returns) * np.sqrt(252)
+    else:
+        downside_volatility = volatility  # Fallback to total volatility
+    
+    sortino_ratio = (annualized_return - rf_rate) / downside_volatility if downside_volatility > 0 else 0
+    
     max_drawdown = qs.stats.max_drawdown(portfolio_values)
 
     results = {
@@ -429,6 +451,7 @@ def buy_and_hold(price_data, port_initial_date, initial_capital:float):
         'annualized_return': annualized_return,
         'annualized_volatility': volatility,
         'sharpe_ratio': sharpe_ratio,
+        'sortino_ratio': sortino_ratio,
         'max_drawdown': max_drawdown,
         'current_weights': current_weights
     }
