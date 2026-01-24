@@ -35,9 +35,18 @@ class PortfolioEnv(gym.Env):
         self.portfolio_value = self.initial_capital
         self.current_weights = np.ones(self.n_assets, dtype=np.float32) / self.n_assets
         self.portfolio_history = [self.initial_capital]
-        self.prev_portfolio_value = self.initial_capital        
+        self.prev_portfolio_value = self.initial_capital
+        
+        # Initialize tracking for weights, transaction costs, and daily turnover
+        self.weights_history = [self.current_weights.copy()]
+        self.transaction_costs_history = [0.0]
+        self.turnover_history = [0.0]
+        self.dates_history = [self.dates[self.lookback_window] if self.lookback_window < len(self.dates) else self.dates[-1]]
+        
         obs = self.build_observation()
-        info = {"step": self.current_step, "portfolio_value": self.portfolio_value, "date": self.dates[self.current_step]}
+        # Ensure current_step is within bounds of dates index
+        step_idx = min(self.current_step, len(self.dates) - 1)
+        info = {"step": self.current_step, "portfolio_value": self.portfolio_value, "date": self.dates[step_idx] if len(self.dates) > 0 else None}
         return (obs, info)
     
     def build_feature_tensor(self, price_df=None):
@@ -186,22 +195,37 @@ class PortfolioEnv(gym.Env):
         return obs
     
     def cal_reward(self, new_value, old_value, turnover):
-        '''SIMPLE RAW RETURN REWARD - BACK TO BASICS
+        '''RAW RETURN REWARD WITH VOLATILITY PENALTY
         
-        Lesson: Volatility adjustment was WRONG in bear markets.
-        - Higher vol = suppressed reward signal
-        - But in bear markets we NEED strong learning signal!
+        Components:
+        1. Return Reward: pct_return * 100.0 (strong scaling for clear signal)
+        2. Turnover Penalty: turnover * 1.0 (discourage excessive trading)
+        3. Volatility Penalty: risk_aversion * volatility (penalize high volatility)
         
-        Fix: Use raw return rewards scaled 100x
-        - Daily return of +0.1% → reward +0.01 (after scaling)
-        - Daily return of -0.1% → reward -0.01
-        - Turnover cost: 1% turnover → -1.0 reward
-        - CLEAR GRADIENTS in all market conditions
+        Volatility is calculated from recent portfolio returns (last 20 days).
+        This encourages the agent to maintain smoother portfolio paths.
         '''
+        # 1. Calculate return reward
         pct_return = (new_value / (old_value + 1e-6)) - 1
         reward = pct_return * 100.0  # Strong scaling for clear signal
-        turnover_penalty = turnover * 1.0  # Simple 1:1 penalty
-        reward -= turnover_penalty
+        
+        # 2. Turnover penalty
+        turnover_penalty = turnover 
+        reward -= turnover_penalty * 0.005
+        
+        # 3. Volatility penalty (based on recent portfolio returns)
+        if len(self.portfolio_history) >= 20:
+            # Calculate returns from last 20 portfolio values
+            recent_values = np.array(self.portfolio_history[-20:])
+            recent_returns = np.diff(recent_values) / recent_values[:-1]
+            
+            # Calculate volatility (standard deviation of returns)
+            volatility = np.std(recent_returns) 
+            
+            # Apply volatility penalty scaled by risk_aversion parameter
+            volatility_penalty = self.risk_aversion * volatility
+            reward -= volatility_penalty * 100.0  # Scale to match reward scale
+        
         return float(reward)
     
     def step(self, action):
@@ -225,6 +249,13 @@ class PortfolioEnv(gym.Env):
         self.portfolio_value = new_portfolio_value
         self.current_weights = target_weights.copy()
         self.portfolio_history.append(new_portfolio_value)
+        
+        # Track weights, transaction costs, and daily turnover
+        self.weights_history.append(target_weights.copy())
+        self.transaction_costs_history.append(cost_deduction * self.prev_portfolio_value)  # Absolute cost in dollars
+        self.turnover_history.append(turnover)  # Daily turnover as percentage
+        self.dates_history.append(self.dates[self.current_step])
+        
         self.current_step += 1
 
         terminated = self.current_step >= len(self.price_data) - 1
@@ -234,6 +265,7 @@ class PortfolioEnv(gym.Env):
             "date": self.dates[self.current_step] if not terminated else self.dates[-1],
             "portfolio_value": float(self.portfolio_value),
             "weights": self.current_weights,
-            "turnover": turnover
+            "turnover": turnover,
+            "transaction_cost": cost_deduction * self.prev_portfolio_value
         }
         return (obs, reward, terminated, truncated, info)

@@ -7,11 +7,86 @@ from datetime import datetime
 import os
 
 def date_index(price_data, date_string: str) -> int:
-    '''converts date string to nearest following trading date index'''
+    '''
+    Converts date string to nearest following trading date index.
+    If the exact date or a forward-fill date doesn't exist, returns the last available index.
+    '''
     ts = pd.to_datetime(date_string)
-    loc = int(price_data.index.get_indexer([ts], method='ffill')[0])
-
+    loc = int(price_data.index.get_indexer([ts], method='bfill')[0])
+    
+    # Handle case where bfill returns -1 (date is beyond all data)
+    if loc == -1:
+        loc = len(price_data) - 1  # Return last available index
+    
     return loc
+
+def calculate_mean_for_period(data: pd.DataFrame, start_date: str = None, end_date: str = None, column: str = None) -> float:
+    '''
+    Calculate the mean for a specified date range in a DataFrame.
+    
+    Args:
+        data (pd.DataFrame): DataFrame with DatetimeIndex
+        start_date (str): Start date in format 'YYYY-MM-DD'. If None, uses earliest date in data
+        end_date (str): End date in format 'YYYY-MM-DD'. If None, uses latest date in data
+        column (str): Column name to calculate mean for. If None, uses all numeric columns
+    
+    Returns:
+        float: Mean value for the specified period and column(s)
+    
+    Example:
+        rf_rate = calculate_mean_for_period(rf_data, start_date='2010-01-01', end_date='2024-12-31', column='TB3MS')
+    '''
+    # Ensure index is datetime
+    data = data.copy()
+    if not isinstance(data.index, pd.DatetimeIndex):
+        data.index = pd.to_datetime(data.index)
+    
+    # Set default dates if not provided
+    if start_date is None:
+        start_date = data.index.min()
+    else:
+        start_date = pd.to_datetime(start_date)
+    
+    if end_date is None:
+        end_date = data.index.max()
+    else:
+        end_date = pd.to_datetime(end_date)
+    
+    # Slice data for the specified period
+    period_data = data.loc[start_date:end_date]
+    
+    # Calculate mean
+    if column is not None:
+        if column in period_data.columns:
+            return float(period_data[column].mean()/100)
+        else:
+            raise ValueError(f"Column '{column}' not found in DataFrame. Available columns: {list(period_data.columns)}")
+    else:
+        # If no column specified, return mean of all numeric data
+        return float(period_data.mean().mean()/100)
+
+def get_rf_rate(start_date: str = None, end_date: str = None) -> float:
+    '''
+    Get the risk-free rate (mean of TB3MS) for a specified period.
+    
+    Args:
+        start_date (str): Start date in format 'YYYY-MM-DD'. If None, uses earliest available date
+        end_date (str): End date in format 'YYYY-MM-DD'. If None, uses latest available date
+    
+    Returns:
+        float: Risk-free rate (mean TB3MS value) for the specified period
+    
+    Example:
+        # Get overall risk-free rate
+        rf_rate = get_rf_rate()
+        
+        # Get risk-free rate for a specific period
+        rf_rate_2010_2018 = get_rf_rate(start_date='2010-01-01', end_date='2018-12-31')
+        
+        # Get risk-free rate for training period
+        rf_rate_train = get_rf_rate(start_date=train_start_date, end_date=train_end_date)
+    '''
+    return calculate_mean_for_period(rf_data, start_date=start_date, end_date=end_date, column='TB3MS')
 
 def orderdict_nparray(dict):
     '''convert OrderedDict to numpy array'''
@@ -28,6 +103,12 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
     return_data = price_data.pct_change()
     # pandas Series for robust indexing
     portfolio_values = pd.Series(np.nan, index=price_data.index, dtype=float)
+    
+    # Track daily weights, transaction costs, and turnover
+    weight_history = []
+    transaction_costs_history = []
+    turnover_history = []
+    dates_history = []
 
     initial_loc = date_index(price_data, port_initial_date)
     # set starting portfolio value at initial_loc
@@ -76,25 +157,254 @@ def rebalance_portfolio(price_data, port_initial_date, lookback_period=252, reba
                     prev_val = portfolio_values.loc[prev_valid_idx] if prev_valid_idx is not None else initial_capital
 
             portfolio_values.iloc[idx] = prev_val * (1 + portfolio_return)
+            
+            # Track weights, transaction costs, and daily turnover
+            weight_history.append(current_weights.copy())
+            transaction_costs_history.append(turnover * transaction_cost * prev_val)  # Absolute cost in dollars
+            turnover_history.append(turnover)  # Percentage turnover
+            dates_history.append(price_data.index[idx])
 
     # drop leading NaNs (before initial_loc)
     portfolio_values = portfolio_values.dropna()
 
     cumulative_return = (portfolio_values.iloc[-1] / initial_capital) - 1
     annualized_return = ((1 + cumulative_return) ** (1 / (len(portfolio_values) / 252))) - 1
-    volatility = portfolio_values.pct_change().std() * np.sqrt(252)
-    sharpe_ratio = (annualized_return - 0.03) / volatility if volatility != 0 else 0
+    
+    # Calculate daily returns for volatility and Sortino ratio
+    daily_returns = portfolio_values.pct_change().dropna()
+    volatility = daily_returns.std() * np.sqrt(252)
+    
+    # Risk-free rate
+    rf_rate = get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')
+    
+    # Sharpe ratio
+    sharpe_ratio = (annualized_return - rf_rate) / volatility if volatility != 0 else 0
+    
+    # Sortino ratio (downside deviation)
+    negative_returns = daily_returns[daily_returns < 0]
+    if len(negative_returns) > 0:
+        downside_volatility = np.std(negative_returns) * np.sqrt(252)
+    else:
+        downside_volatility = volatility  # Fallback to total volatility
+    
+    sortino_ratio = (annualized_return - rf_rate) / downside_volatility if downside_volatility > 0 else 0
+    
     max_drawdown = qs.stats.max_drawdown(portfolio_values)
+
+    # Create weights DataFrame
+    weights_df = pd.DataFrame(weight_history, columns=[f"{col}_weight" for col in price_data.columns])
+    weights_df['date'] = dates_history
+    weights_df = weights_df[['date'] + [f"{col}_weight" for col in price_data.columns]]
+    
+    # Create transaction costs DataFrame
+    transaction_df = pd.DataFrame({
+        'date': dates_history,
+        'transaction_cost': transaction_costs_history
+    })
+    
+    # Create turnover DataFrame
+    turnover_df = pd.DataFrame({
+        'date': dates_history,
+        'turnover': turnover_history  # Daily turnover as percentage
+    })
 
     results = {
         'portfolio_values': portfolio_values,
-        'annualized_return': f"{annualized_return:.2%}",
-        'annualized_volatility': f"{volatility:.2%}",
-        'sharpe_ratio': f"{sharpe_ratio:.2f}",
-        'max_drawdown': f"{max_drawdown:.2%}",
-        'current_weights': current_weights
+        'annualized_return': annualized_return,
+        'annualized_volatility': volatility,
+        'sharpe_ratio': sharpe_ratio,
+        'sortino_ratio': sortino_ratio,
+        'max_drawdown': max_drawdown,
+        'current_weights': current_weights,
+        'weights_df': weights_df,
+        'transaction_df': transaction_df,
+        'turnover_df': turnover_df
     }
     return results
+
+def risk_parity_portfolio(price_data, port_initial_date, lookback_period=21, transaction_cost=0.0015):
+    """
+    Risk-parity portfolio rebalancing strategy using Hierarchical Risk Parity (HRP).
+    
+    Uses pypfopt.HRPOpt to allocate weights based on hierarchical clustering,
+    which provides better diversification than simple inverse volatility weighting.
+    
+    Parameters:
+    -----------
+    price_data : pd.DataFrame
+        Historical price data with assets as columns
+    port_initial_date : str
+        Portfolio start date (YYYY-MM-DD format)
+    lookback_period : int
+        Number of trading days for optimization (default: 21)
+    transaction_cost : float
+        Transaction cost as percentage of turnover (default: 0.0015)
+    
+    Returns:
+    --------
+    dict : Portfolio performance metrics including:
+        - 'portfolio_values': Series of daily portfolio values
+        - 'annualized_return': Annualized return
+        - 'sharpe_ratio': Sharpe ratio
+        - 'max_drawdown': Maximum drawdown
+        - 'calmar_ratio': Calmar ratio
+        - 'current_weights': Final portfolio weights
+    """
+    from pypfopt import HRPOpt
+    
+    # Filter data from port_initial_date onwards
+    port_data = price_data.iloc[max(0,date_index(price_data, port_initial_date) - lookback_period):].copy()
+    
+    if len(port_data) < lookback_period + 1:
+        raise ValueError(f"Insufficient data. Need at least {lookback_period + 1} days from {port_initial_date}")
+    
+    # Initialize tracking variables
+    portfolio_values = []
+    weight_history = []
+    transaction_costs_history = []
+    turnover_history = []
+    dates = []
+    initial_capital = 1000000
+    current_value = initial_capital
+    current_weights = np.ones(price_data.shape[1]) / price_data.shape[1]  # Equal initial weights
+    
+    # Calculate returns for Sharpe ratio computation
+    # risk_free_rate = get_rf_rate(start_date=port_data.index[0].strftime('%Y-%m-%d'),
+    #                               end_date=port_data.index[-1].strftime('%Y-%m-%d'))
+
+    risk_free_rate = get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')
+    
+    # Iterate through each day starting from lookback_period
+    for i in range(lookback_period, len(port_data)):
+        current_date = port_data.index[i]
+        lookback_data = port_data.iloc[i - lookback_period:i]
+        
+        # Calculate returns for the lookback period
+        returns = lookback_data.pct_change().dropna()
+        
+        # Validate returns data
+        if len(returns) < 2:
+            target_weights = current_weights.copy()
+        elif returns.isna().any().any() or np.isinf(returns.values).any():
+            # Data contains NaN or inf values
+            target_weights = current_weights.copy()
+        elif (returns.std() == 0).any():
+            # Zero variance assets - use equal weights
+            target_weights = np.ones(len(price_data.columns)) / len(price_data.columns)
+        else:
+            try:
+                # Clean any remaining NaN/inf values
+                returns_clean = returns.fillna(0).replace([np.inf, -np.inf], 0)
+                
+                # Use HRPOpt to calculate optimal weights
+                hrp = HRPOpt(returns_clean)
+                target_weights_dict = hrp.optimize()
+                
+                # Convert dictionary to array in correct column order
+                target_weights = np.array([target_weights_dict.get(col, 0) for col in price_data.columns])
+                
+                # Handle edge cases (all zeros or NaN)
+                if np.isnan(target_weights).any() or (target_weights == 0).all():
+                    target_weights = np.ones(len(price_data.columns)) / len(price_data.columns)
+                else:
+                    target_weights = target_weights / target_weights.sum()  # Normalize
+                    
+            except Exception as e:
+                # Fall back to equal weights on any error
+                target_weights = np.ones(len(price_data.columns)) / len(price_data.columns)
+        
+        # Calculate turnover (sum of absolute weight changes)
+        turnover = np.sum(np.abs(target_weights - current_weights))
+        
+        # Apply transaction costs
+        cost_deduction = turnover * transaction_cost
+        
+        # Get daily returns
+        daily_return = (port_data.iloc[i] / port_data.iloc[i-1] - 1).values
+        
+        # Calculate portfolio return
+        portfolio_return = np.dot(current_weights, daily_return)
+        
+        # Update portfolio value
+        current_value = current_value * (1 + portfolio_return) * (1 - cost_deduction)
+        
+        # Store results
+        portfolio_values.append(current_value)
+        weight_history.append(target_weights.copy())
+        transaction_costs_history.append(turnover * transaction_cost * (current_value / (1 - cost_deduction)))  # Absolute cost in dollars
+        turnover_history.append(turnover)  # Daily turnover as percentage
+        dates.append(current_date)
+        
+        # Update weights for next iteration
+        current_weights = target_weights.copy()
+    
+    # Create results DataFrame
+    portfolio_df = pd.DataFrame({
+        'date': dates,
+        'portfolio_value': portfolio_values
+    })
+    
+    # Calculate performance metrics
+    portfolio_returns = np.diff(portfolio_values) / np.array(portfolio_values[:-1])
+    annualized_return = (portfolio_values[-1] / initial_capital) ** (252 / len(portfolio_values)) - 1
+    
+    # Annualized volatility
+    annualized_volatility = np.std(portfolio_returns) * np.sqrt(252)
+    
+    # Sharpe ratio
+    excess_returns = portfolio_returns - (risk_free_rate / 252)
+    sharpe_ratio = np.sqrt(252) * np.mean(excess_returns) / (np.std(excess_returns) + 1e-8)
+    
+    # Sortino ratio (downside deviation)
+    negative_returns = portfolio_returns[portfolio_returns < 0]
+    if len(negative_returns) > 0:
+        downside_volatility = np.std(negative_returns) * np.sqrt(252)
+    else:
+        downside_volatility = np.std(portfolio_returns) * np.sqrt(252)  # Fallback to total volatility
+    
+    sortino_ratio = (annualized_return - risk_free_rate) / downside_volatility if downside_volatility > 0 else 0
+    
+    # Maximum drawdown
+    cumulative_values = np.array(portfolio_values)
+    running_max = np.maximum.accumulate(cumulative_values)
+    drawdown = (cumulative_values - running_max) / running_max
+    max_drawdown = np.min(drawdown)
+    
+    # Calmar ratio
+    calmar_ratio = annualized_return / abs(max_drawdown) if max_drawdown != 0 else 0
+    
+    # Create weights DataFrame
+    weights_df = pd.DataFrame(weight_history, columns=[f"{col}_weight" for col in price_data.columns])
+    weights_df['date'] = dates
+    weights_df = weights_df[['date'] + [f"{col}_weight" for col in price_data.columns]]
+    
+    # Create transaction costs DataFrame
+    transaction_df = pd.DataFrame({
+        'date': dates,
+        'transaction_cost': transaction_costs_history
+    })
+    
+    # Create turnover DataFrame
+    turnover_df = pd.DataFrame({
+        'date': dates,
+        'turnover': turnover_history  # Daily turnover as percentage
+    })
+    
+    return {
+        'portfolio_values': pd.Series(portfolio_values, index=dates),
+        'annualized_return': annualized_return,
+        'annualized_volatility': annualized_volatility,
+        'sharpe_ratio': sharpe_ratio,
+        'sortino_ratio': sortino_ratio,
+        'max_drawdown': max_drawdown,
+        'calmar_ratio': calmar_ratio,
+        'current_weights': current_weights,
+        'portfolio_df': portfolio_df,
+        'weight_history': np.array(weight_history),
+        'weights_df': weights_df,
+        'transaction_df': transaction_df,
+        'turnover_df': turnover_df
+    }
 
 def buy_and_hold(price_data, port_initial_date, initial_capital:float): 
     current_weights = np.array([1/len(price_data.columns)] * len(price_data.columns))       # initial weights is equal weights
@@ -114,15 +424,34 @@ def buy_and_hold(price_data, port_initial_date, initial_capital:float):
     # calculate portfolio performance metrics
     cumulative_return = (portfolio_values.iloc[-1]/initial_capital) - 1
     annualized_return = ((cumulative_return+1)**(1/(len(portfolio_values)/252))) - 1
-    volatility = portfolio_values.pct_change().std() * np.sqrt(252)
-    sharpe_ratio = (annualized_return - 0.03) / volatility if volatility != 0 else 0
+    
+    # Calculate daily returns for volatility and Sortino ratio
+    daily_returns = portfolio_values.pct_change().dropna()
+    volatility = daily_returns.std() * np.sqrt(252)
+    
+    # Risk-free rate
+    rf_rate = get_rf_rate(start_date='2019-01-01', end_date='2024-12-01')
+    
+    # Sharpe ratio
+    sharpe_ratio = (annualized_return - rf_rate) / volatility if volatility != 0 else 0
+    
+    # Sortino ratio (downside deviation)
+    negative_returns = daily_returns[daily_returns < 0]
+    if len(negative_returns) > 0:
+        downside_volatility = np.std(negative_returns) * np.sqrt(252)
+    else:
+        downside_volatility = volatility  # Fallback to total volatility
+    
+    sortino_ratio = (annualized_return - rf_rate) / downside_volatility if downside_volatility > 0 else 0
+    
     max_drawdown = qs.stats.max_drawdown(portfolio_values)
 
     results = {
         'portfolio_values': portfolio_values,
-        'annualized_return': f"{annualized_return:.2%}",
-        'annualized_volatility': f"{volatility:.2%}",
-        'sharpe_ratio': f"{sharpe_ratio:.2f}",
+        'annualized_return': annualized_return,
+        'annualized_volatility': volatility,
+        'sharpe_ratio': sharpe_ratio,
+        'sortino_ratio': sortino_ratio,
         'max_drawdown': max_drawdown,
         'current_weights': current_weights
     }
@@ -263,3 +592,112 @@ def log_hpt_results(model_name, hyperparams, total_timesteps, eval_results):
     print(f"✓ Logged {model_name} results to {hpt_log_file}")
 
 print("✓ Hyperparameter tracking initialized!")
+
+def export_env_weights_and_costs(env, output_dir):
+    """
+    Export daily weights and transaction costs from a PortfolioEnv instance.
+    
+    Parameters:
+    -----------
+    env : PortfolioEnv
+        Environment instance with tracking data
+    output_dir : str
+        Directory to save CSV files
+    
+    Returns:
+    --------
+    tuple : (weights_df, transaction_df)
+    """
+    # Create weights DataFrame
+    weights_df = pd.DataFrame(
+        env.weights_history,
+        columns=[f"{col}_weight" for col in env.price_data.columns]
+    )
+    weights_df['date'] = env.dates_history
+    weights_df = weights_df[['date'] + [f"{col}_weight" for col in env.price_data.columns]]
+    
+    # Create transaction costs DataFrame
+    transaction_df = pd.DataFrame({
+        'date': env.dates_history,
+        'transaction_cost': env.transaction_costs_history
+    })
+    
+    # Export to CSV
+    os.makedirs(output_dir, exist_ok=True)
+    weights_path = os.path.join(output_dir, 'daily_weights.csv')
+    costs_path = os.path.join(output_dir, 'daily_transaction_costs.csv')
+    
+    weights_df.to_csv(weights_path, index=False)
+    transaction_df.to_csv(costs_path, index=False)
+    
+    print(f"✓ Exported daily weights to {weights_path}")
+    print(f"✓ Exported transaction costs to {costs_path}")
+    
+    return weights_df, transaction_df
+
+
+def calculate_diversification_ratio(weights_df: pd.DataFrame, asset_weight_cols: list = None) -> pd.DataFrame:
+    """
+    Calculate the daily diversification ratio for asset weights.
+    
+    The diversification ratio measures how spread out the portfolio weights are across assets.
+    Formula: DR = Sum of |weights| / sqrt(Sum of weights²)
+    
+    Range:
+    - DR = 1: Fully concentrated (all weight in one asset)
+    - DR = sqrt(n_assets): Fully diversified (equal weight across all assets)
+    
+    Parameters:
+    -----------
+    weights_df : pd.DataFrame
+        DataFrame containing asset weights with date column.
+        Can have weights in columns like 'asset_0', 'asset_1', ... or 'SPY', 'TLT', 'GLD', 'FXY'
+        or formats like 'SPY_weight', 'TLT_weight', etc.
+    
+    asset_weight_cols : list, optional
+        List of column names containing asset weights.
+        If None, automatically detects weight columns (excludes 'date' and mean/sd columns).
+    
+    Returns:
+    --------
+    pd.DataFrame
+        Input DataFrame with added 'diversification_ratio' column.
+    
+    Example:
+    --------
+    >>> weights_df = pd.read_csv('hrp_daily_weights.csv')
+    >>> result = calculate_diversification_ratio(weights_df)
+    >>> print(result[['date', 'diversification_ratio']].head())
+    """
+    df = weights_df.copy()
+    
+    # Auto-detect asset weight columns if not provided
+    if asset_weight_cols is None:
+        # Exclude 'date' column and columns with 'mean', 'sd', 'mean' in name
+        exclude_patterns = ['date', 'mean', 'sd', '_ratio']
+        asset_weight_cols = [col for col in df.columns 
+                            if not any(pattern in col.lower() for pattern in exclude_patterns)]
+    
+    # Calculate diversification ratio for each row
+    def calc_dr(row):
+        weights = row[asset_weight_cols].values
+        # Handle edge cases: empty weights or all zeros
+        if len(weights) == 0 or np.sum(np.abs(weights)) == 0:
+            return np.nan
+        
+        # DR = Sum of |weights| / sqrt(Sum of weights²)
+        numerator = np.sum(np.abs(weights))
+        denominator = np.sqrt(np.sum(weights ** 2))
+        
+        if denominator == 0:
+            return np.nan
+        
+        return (numerator / denominator)
+    
+    df['diversification_ratio'] = df.apply(calc_dr, axis=1)
+    
+    return df
+
+
+rf_data = pd.read_csv('tables/TB3MS.csv', index_col=0, parse_dates=True)
+rf_rate = rf_data['TB3MS'].mean()
